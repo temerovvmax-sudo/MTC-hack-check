@@ -160,7 +160,7 @@
 - name: Wait for the Envoy data plane
   ansible.builtin.command: >-
     {{ repo_root }}/scripts/with-lab-kubeconfig.sh
-    kubectl -n testy wait --for=condition=Available deployment
+    kubectl -n envoy-gateway-system wait --for=condition=Available deployment
     -l gateway.envoyproxy.io/owning-gateway-name=testy --timeout=300s
   changed_when: false
 

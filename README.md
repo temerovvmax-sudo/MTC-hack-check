@@ -155,7 +155,7 @@ runcmd:
 - `HTTPRoute` `testy-ui` и `testy-api`
 - `EnvoyProxy` `testy-proxy` — Service `LoadBalancer`, `externalTrafficPolicy: Local`, 2 реплики, nodeSelector и toleration gateway-узлов, PDB `minAvailable: 1`
 
-Плейбук подставляет `loadBalancerIP` и аннотацию `metallb.universe.tf/loadBalancerIPs` из `metallb_vip`. Пул MetalLB — этот адрес с маской `/32`. L2Advertisement ограничен узлами с меткой gateway. Speaker MetalLB терпит taint gateway, контроллер сидит на workers.
+Плейбук подставляет аннотацию `metallb.universe.tf/loadBalancerIPs` из `metallb_vip`. Поле `loadBalancerIP` не задаётся: MetalLB 0.16 не принимает его вместе с этой аннотацией. Пул MetalLB — этот адрес с маской `/32`. L2Advertisement ограничен узлами с меткой gateway. Speaker MetalLB терпит taint gateway, контроллер сидит на workers.
 
 TLS терминируется на Gateway. CA и сертификат с SAN обоих имён создаёт `scripts/generate-tls.sh` в `.secrets/tls/`. Повторный деплой сертификат не перевыпускает, пока имена не изменились.
 

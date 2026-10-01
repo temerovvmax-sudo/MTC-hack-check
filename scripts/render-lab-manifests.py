@@ -45,7 +45,6 @@ def main() -> None:
     insert = (
         "        type: LoadBalancer\n"
         "        externalTrafficPolicy: Local\n"
-        f"        loadBalancerIP: {vip}\n"
         "        annotations:\n"
         f"          metallb.universe.tf/loadBalancerIPs: {vip}\n"
     )

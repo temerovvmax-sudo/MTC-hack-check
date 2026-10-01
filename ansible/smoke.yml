@@ -160,13 +160,15 @@
       changed_when: true
 
     - name: Create the TestY secret from the lab credentials
-      ansible.builtin.shell: |
-        set -euo pipefail
-        {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl -n testy create secret generic testy-secrets \
-          --from-literal=POSTGRES_PASSWORD='{{ POSTGRES_PASSWORD }}' \
-          --from-literal=SECRET_KEY='{{ SECRET_KEY }}' \
-          --from-literal=SUPERUSER_PASSWORD='{{ SUPERUSER_PASSWORD }}' \
-          --dry-run=client -o yaml | {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl apply -f -
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl -n testy create secret generic testy-secrets \
+            --from-literal=POSTGRES_PASSWORD='{{ POSTGRES_PASSWORD }}' \
+            --from-literal=SECRET_KEY='{{ SECRET_KEY }}' \
+            --from-literal=SUPERUSER_PASSWORD='{{ SUPERUSER_PASSWORD }}' \
+            --dry-run=client -o yaml | {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl apply -f -
+        executable: /bin/bash
       no_log: true
       changed_when: true
 

@@ -108,7 +108,7 @@
 
 - name: Disable ufw so kubeadm and MetalLB ARP are not filtered
   ansible.builtin.shell: |
-    set -euo pipefail
+    set -eu
     if command -v ufw >/dev/null; then
       ufw disable
     fi
@@ -136,7 +136,7 @@
 
 - name: Install the pkgs.k8s.io signing key
   ansible.builtin.shell: |
-    set -euo pipefail
+    set -eu
     tmp="$(mktemp)"
     curl -fsSL -o "${tmp}" "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_minor }}/deb/Release.key"
     gpg --dearmor --yes -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg "${tmp}"
@@ -183,10 +183,12 @@
 
 - name: Write a containerd config with SystemdCgroup
   when: containerd_cgroup.rc != 0
-  ansible.builtin.shell: |
-    set -euo pipefail
-    mkdir -p /etc/containerd
-    containerd config default | sed 's/SystemdCgroup = false/SystemdCgroup = true/' > /etc/containerd/config.toml
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      mkdir -p /etc/containerd
+      containerd config default | sed 's/SystemdCgroup = false/SystemdCgroup = true/' > /etc/containerd/config.toml
+    executable: /bin/bash
   register: containerd_config
 
 - name: Restart containerd after a config change

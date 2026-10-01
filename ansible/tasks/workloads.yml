@@ -10,13 +10,15 @@
     file: "{{ lab_credentials_json }}"
 
 - name: Create the TestY secret from the lab credentials
-  ansible.builtin.shell: |
-    set -euo pipefail
-    {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl -n testy create secret generic testy-secrets \
-      --from-literal=POSTGRES_PASSWORD='{{ POSTGRES_PASSWORD }}' \
-      --from-literal=SECRET_KEY='{{ SECRET_KEY }}' \
-      --from-literal=SUPERUSER_PASSWORD='{{ SUPERUSER_PASSWORD }}' \
-      --dry-run=client -o yaml | {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl apply -f -
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl -n testy create secret generic testy-secrets \
+        --from-literal=POSTGRES_PASSWORD='{{ POSTGRES_PASSWORD }}' \
+        --from-literal=SECRET_KEY='{{ SECRET_KEY }}' \
+        --from-literal=SUPERUSER_PASSWORD='{{ SUPERUSER_PASSWORD }}' \
+        --dry-run=client -o yaml | {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl apply -f -
+    executable: /bin/bash
   no_log: true
   changed_when: true
 
@@ -40,18 +42,20 @@
   changed_when: true
 
 - name: Create the Grafana admin secret
-  ansible.builtin.shell: |
-    set -euo pipefail
-    {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl -n monitoring create secret generic lab-grafana-admin \
-      --from-literal=admin-user='{{ GRAFANA_ADMIN_USER }}' \
-      --from-literal=admin-password='{{ GRAFANA_ADMIN_PASSWORD }}' \
-      --dry-run=client -o yaml | {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl apply -f -
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl -n monitoring create secret generic lab-grafana-admin \
+        --from-literal=admin-user='{{ GRAFANA_ADMIN_USER }}' \
+        --from-literal=admin-password='{{ GRAFANA_ADMIN_PASSWORD }}' \
+        --dry-run=client -o yaml | {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl apply -f -
+    executable: /bin/bash
   no_log: true
   changed_when: true
 
 - name: Add Helm chart repositories
   ansible.builtin.shell: |
-    set -euo pipefail
+    set -eu
     helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
     helm repo add grafana https://grafana.github.io/helm-charts
     helm repo update
@@ -142,7 +146,7 @@
 
 - name: Wait until MetalLB assigns the Gateway VIP
   ansible.builtin.shell: |
-    set -euo pipefail
+    set -eu
     ip="$({{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl get svc -A \
       -l gateway.envoyproxy.io/owning-gateway-name=testy \
       -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')"

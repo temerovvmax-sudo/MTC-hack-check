@@ -97,11 +97,28 @@ spec:
       tolerations:
         - operator: Exists
       securityContext:
+        runAsUser: 999
+        runAsGroup: 999
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
         supplementalGroups:
           - 0
+      initContainers:
+        - name: tmp-perms
+          image: testy-fluentd:1.19.3
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/chmod", "1777", "/tmp"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
       containers:
         - name: fluentd
           image: testy-fluentd:1.19.3
@@ -138,6 +155,8 @@ spec:
               cpu: 300m
               memory: 256Mi
           securityContext:
+            runAsUser: 999
+            runAsGroup: 999
             runAsNonRoot: true
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

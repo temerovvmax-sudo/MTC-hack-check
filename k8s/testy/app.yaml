@@ -84,6 +84,8 @@ spec:
           volumeMounts:
             - name: media
               mountPath: /testy/media
+            - name: varlog
+              mountPath: /var/log
           startupProbe:
             httpGet:
               path: /healthcheck/
@@ -175,6 +177,8 @@ spec:
           configMap:
             name: testy-accesslog-nginx
         - name: tmp
+          emptyDir: {}
+        - name: varlog
           emptyDir: {}
 ---
 apiVersion: v1
@@ -280,6 +284,8 @@ spec:
           volumeMounts:
             - name: media
               mountPath: /testy/media
+            - name: varlog
+              mountPath: /var/log
           readinessProbe:
             exec:
               command:
@@ -316,6 +322,8 @@ spec:
         - name: media
           persistentVolumeClaim:
             claimName: testy-media
+        - name: varlog
+          emptyDir: {}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
@@ -407,6 +415,8 @@ spec:
           volumeMounts:
             - name: media
               mountPath: /testy/media
+            - name: varlog
+              mountPath: /var/log
           resources:
             requests:
               cpu: 50m
@@ -425,6 +435,8 @@ spec:
         - name: media
           persistentVolumeClaim:
             claimName: testy-media
+        - name: varlog
+          emptyDir: {}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

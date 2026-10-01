@@ -243,8 +243,12 @@ Access-лог пишет sidecar `accesslog` в поде backend. Формат �
 ```bash
 export KUBECONFIG="$PWD/.kube/lab.config"
 kubectl -n logging port-forward svc/loki 13100:3100
-curl -fsS -G 'http://127.0.0.1:13100/loki/api/v1/query' \
-  --data-urlencode 'query={job="testy-access"} |= "testy-access" |= "probe=labmanual"'
+end=$(date +%s)
+start=$((end - 900))
+curl -fsS -G 'http://127.0.0.1:13100/loki/api/v1/query_range' \
+  --data-urlencode 'query={job="testy-access"} |= "testy-access" |= "probe=labmanual"' \
+  --data-urlencode "start=${start}" \
+  --data-urlencode "end=${end}"
 ```
 
 Fluentd работает от root и не privileged: ему нужно читать hostPath `/var/log`.

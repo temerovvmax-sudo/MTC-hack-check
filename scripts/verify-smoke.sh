@@ -140,9 +140,15 @@ found = False
 loki = port_forward("logging", "svc/loki", 13100, 3100, "/ready")
 try:
     for _ in range(24):
-        encoded = urllib.parse.urlencode({"query": logql, "limit": "5"})
+        now = int(time.time())
+        encoded = urllib.parse.urlencode({
+            "query": logql,
+            "start": str(now - 15 * 60),
+            "end": str(now + 30),
+            "limit": "5",
+        })
         result = subprocess.run(
-            ["curl", "-fsS", f"http://127.0.0.1:13100/loki/api/v1/query?{encoded}"],
+            ["curl", "-fsS", f"http://127.0.0.1:13100/loki/api/v1/query_range?{encoded}"],
             text=True, capture_output=True, env=env,
         )
         if result.returncode == 0:

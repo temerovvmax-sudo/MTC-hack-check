@@ -10,11 +10,12 @@
     src: /var/lib/testy-lab/images.stamp
   register: remote_stamp
   failed_when: false
+  changed_when: false
 
 - name: Choose which archives this node needs
   ansible.builtin.set_fact:
     local_image_stamp: "{{ lookup('file', lab_cache + '/image-build.stamp') }}"
-    remote_image_stamp: "{{ '' if remote_stamp.failed | default(true) else (remote_stamp.content | b64decode) }}"
+    remote_image_stamp: "{{ (remote_stamp.content | default('') | b64decode) if (remote_stamp.content is defined) else '' }}"
     lab_image_files: "{{ ['testy-fluentd.tar'] + (['testy-backend.tar', 'testy-frontend.tar'] if inventory_hostname in groups['workers'] else []) }}"
 
 - name: Import lab images into containerd

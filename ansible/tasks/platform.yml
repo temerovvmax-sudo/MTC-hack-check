@@ -77,6 +77,25 @@
   ansible.builtin.command: helm repo update
   changed_when: false
 
+- name: Ensure the MetalLB namespace exists
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl get namespace metallb-system >/dev/null 2>&1 \
+        || {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl create namespace metallb-system
+    executable: /bin/bash
+  changed_when: true
+
+- name: Allow MetalLB speaker hostNetwork
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl label namespace metallb-system
+    pod-security.kubernetes.io/enforce=privileged
+    pod-security.kubernetes.io/audit=privileged
+    pod-security.kubernetes.io/warn=privileged
+    --overwrite
+  changed_when: true
+
 - name: Install or upgrade MetalLB
   ansible.builtin.command: >-
     {{ repo_root }}/scripts/with-lab-kubeconfig.sh

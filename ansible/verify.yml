@@ -1,14 +1,19 @@
 ---
-- name: Verify the TestY lab
+- name: Verify the TestY lab through the MetalLB VIP
   hosts: localhost
   connection: local
   gather_facts: false
+  tags: [inventory]
   environment:
     KUBECONFIG: "{{ lab_kubeconfig }}"
-    MINIKUBE_HOME: "{{ lab_minikube_home }}"
   tasks:
     - ansible.builtin.import_tasks: tasks/guard.yml
+    - ansible.builtin.import_tasks: tasks/check-inventory.yml
 
-    - name: Curl the Gateway, query Prometheus and find the access log in Loki
+    - name: Curl the Gateway VIP, query Prometheus and find the access log in Loki
       ansible.builtin.command: "{{ repo_root }}/scripts/verify-cluster.sh"
+      environment:
+        METALLB_VIP: "{{ metallb_vip }}"
+        UI_HOST: "{{ ui_host }}"
+        API_HOST: "{{ api_host }}"
       changed_when: false

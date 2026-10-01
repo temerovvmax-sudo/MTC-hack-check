@@ -1,0 +1,204 @@
+---
+- name: Require Debian 12 or Ubuntu 24.04
+  ansible.builtin.assert:
+    that:
+      - >-
+        (ansible_distribution == "Debian" and ansible_distribution_release == "bookworm")
+        or (ansible_distribution == "Ubuntu" and ansible_distribution_release == "noble")
+    fail_msg: >-
+      Узел {{ inventory_hostname }} должен быть Debian 12 (bookworm) или Ubuntu 24.04 (noble).
+      Найдено {{ ansible_distribution }} {{ ansible_distribution_version }}
+      ({{ ansible_distribution_release }}).
+
+- name: Pin containerd for this distribution
+  ansible.builtin.set_fact:
+    containerd_apt_version: "{{ containerd_apt_version_debian if ansible_distribution == 'Debian' else containerd_apt_version_ubuntu }}"
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - chrony
+      - qemu-guest-agent
+      - conntrack
+      - socat
+      - iptables
+      - ethtool
+      - python3
+      - cloud-guest-utils
+      - lvm2
+      - e2fsprogs
+      - xfsprogs
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Grow the root LVM online when the disk has free space
+  ansible.builtin.script:
+    cmd: "{{ repo_root }}/scripts/grow-root-lvm.sh"
+    executable: /bin/bash
+  register: root_lvm_grow
+  changed_when: root_lvm_grow.stdout is search('(?m)^grew ')
+
+- name: Require free disk for images and etcd
+  ansible.builtin.command: df -BG --output=avail /
+  register: disk_free
+  changed_when: false
+
+- name: Fail when the root filesystem is too small
+  ansible.builtin.assert:
+    that:
+      - (disk_free.stdout_lines[-1] | regex_replace('[^0-9]', '') | int) >= 15
+    fail_msg: >-
+      На {{ inventory_hostname }} свободно меньше 15 ГиБ на /.
+      Строка df: {{ disk_free.stdout_lines[-1] }}.
+
+- name: Turn swap off
+  ansible.builtin.command: swapoff -a
+  changed_when: false
+
+- name: Keep swap out of fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s+.*)$'
+    replace: '# \1'
+
+- name: Set the hostname from the inventory
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Load the modules kubeadm expects
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/testy-lab.conf
+    mode: "0644"
+    content: |
+      overlay
+      br_netfilter
+
+- name: Load overlay
+  ansible.builtin.command: modprobe overlay
+  changed_when: false
+
+- name: Load br_netfilter
+  ansible.builtin.command: modprobe br_netfilter
+  changed_when: false
+
+- name: Write sysctl settings for bridged traffic
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-testy-lab.conf
+    mode: "0644"
+    content: |
+      net.ipv4.ip_forward = 1
+      net.bridge.bridge-nf-call-iptables = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+
+- name: Apply sysctl settings
+  ansible.builtin.command: sysctl --system
+  changed_when: false
+
+- name: Disable ufw so kubeadm and MetalLB ARP are not filtered
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if command -v ufw >/dev/null; then
+      ufw disable
+    fi
+  changed_when: false
+
+- name: Start chrony
+  ansible.builtin.systemd:
+    name: chrony
+    state: started
+    enabled: true
+
+- name: Start the QEMU guest agent when the host is a VM
+  ansible.builtin.systemd:
+    name: qemu-guest-agent
+    state: started
+    enabled: true
+  register: guest_agent
+  failed_when: false
+
+- name: Kubernetes signing key directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Install the pkgs.k8s.io signing key
+  ansible.builtin.shell: |
+    set -euo pipefail
+    tmp="$(mktemp)"
+    curl -fsSL -o "${tmp}" "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_minor }}/deb/Release.key"
+    gpg --dearmor --yes -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg "${tmp}"
+    rm -f "${tmp}"
+  changed_when: false
+
+- name: Add the pkgs.k8s.io apt source for Debian and Ubuntu
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/kubernetes.list
+    mode: "0644"
+    content: |
+      deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_minor }}/deb/ /
+
+- name: Install pinned containerd, kubeadm, kubelet and kubectl
+  ansible.builtin.apt:
+    name:
+      - "containerd={{ containerd_apt_version }}"
+      - "cri-tools={{ cri_tools_apt_version }}"
+      - "kubernetes-cni={{ kubernetes_cni_apt_version }}"
+      - "kubelet={{ kubernetes_apt_version }}"
+      - "kubeadm={{ kubernetes_apt_version }}"
+      - "kubectl={{ kubernetes_apt_version }}"
+    state: present
+    update_cache: true
+    allow_downgrade: true
+
+- name: Hold the pinned runtime and Kubernetes packages
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - containerd
+    - cri-tools
+    - kubernetes-cni
+    - kubelet
+    - kubeadm
+    - kubectl
+
+- name: Check whether containerd already uses the systemd cgroup driver
+  ansible.builtin.command: grep -q 'SystemdCgroup = true' /etc/containerd/config.toml
+  register: containerd_cgroup
+  changed_when: false
+  failed_when: false
+
+- name: Write a containerd config with SystemdCgroup
+  when: containerd_cgroup.rc != 0
+  ansible.builtin.shell: |
+    set -euo pipefail
+    mkdir -p /etc/containerd
+    containerd config default | sed 's/SystemdCgroup = false/SystemdCgroup = true/' > /etc/containerd/config.toml
+  register: containerd_config
+
+- name: Restart containerd after a config change
+  ansible.builtin.systemd:
+    name: containerd
+    state: restarted
+    enabled: true
+    daemon_reload: true
+  when: containerd_config is changed
+
+- name: Ensure containerd is running
+  ansible.builtin.systemd:
+    name: containerd
+    state: started
+    enabled: true
+
+- name: Enable kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    state: started
+  failed_when: false

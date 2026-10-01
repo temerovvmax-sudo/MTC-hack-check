@@ -2,50 +2,41 @@
 
 ## 1. Архитектура и стек
 
-Стенд поднимается плейбуком Ansible на чистой Ubuntu 24.04. Кластер создаёт minikube v1.39.0 (docker driver, профиль testy-lab): Kubernetes v1.37.0, 6 узлов — 1 control-plane, 3 worker с меткой testy.yadro.dev/pool=app, 2 gateway с той же меткой pool=gateway и taint NoSchedule. Приложение на gateway-узлы не планируется.
+Стенд — шесть виртуальных машин Debian 12, пользователь m.temerov. Тот же плейбук поддерживает Ubuntu 24.04. Кластер собирает kubeadm: Kubernetes v1.37.0, пакеты kubeadm, kubelet и kubectl 1.37.0-1.1 с pkgs.k8s.io, containerd Debian 1.6.20~ds1-1+deb12u3. CNI — Calico v3.32.2. Один control-plane, три worker с меткой pool=app, два gateway с меткой pool=gateway и taint NoSchedule. На gateway планируется только data plane Envoy.
 
-TestY 2.1.3 (тег release/2.1.3, коммит 3544c0f) собирается из публичного GitLab YADRO. В кластере: gunicorn/uvicorn, frontend nginx, PostgreSQL 14.5, PgBouncer 1.22.1, Redis 7.4.6, Celery worker с beat и notification worker. Образы свои, теги зафиксированы, приватный реестр не нужен.
+Снаружи нет облачного балансировщика. MetalLB v0.16.1 работает в L2: один VIP в той же подсети, Service Envoy Gateway типа LoadBalancer. Имена testy.local и api.testy.local, TLS на Gateway.
 
-Вход: Envoy Gateway v1.9.2. GatewayClass eg описан в репозитории: chart 1.9.2 его не создаёт. Gateway testy принимает HTTP и два HTTPS-слушателя (testy.local и api.testy.local). HTTPRoute ui ведёт на frontend, HTTPRoute api — на backend, третий маршрут делает 301 на HTTPS. EnvoyProxy сажает 2 реплики data plane только на gateway-узлы.
-
-Наблюдаемость: kube-prometheus-stack 91.8.2 (Prometheus v3.15.0, operator v0.94.1, Grafana 13.2.3, Alertmanager v0.34.1) через Helm. Логи: Fluentd 1.19.3 и fluent-plugin-grafana-loki 1.3.0, Loki chart 6.55.0, образ grafana/loki:3.7.8, режим SingleBinary, диск filesystem. Fluentd — DaemonSet от root без privileged: так он читает CRI-логи в /var/log.
+TestY 2.1.3 (тег release/2.1.3), Envoy Gateway v1.9.2, kube-prometheus-stack 91.8.2, Grafana 13.2.3, Fluentd 1.19.3 в Loki 3.7.8. Диски — local-path. Кластер этим репозиторием не поднимался и SSH на ВМ не выполнялся.
 
 [[diagram]]
 
 ## 2. Как сделано и как проверить
 
-Шесть узлов. Ansible вызывает minikube start --nodes=6 и затем метит узлы. Проверка: kubectl get nodes -L testy.yadro.dev/pool и taint на двух gateway. Поды backend не имеют toleration, Envoy его имеет.
+Инвентарь. Подсеть 192.168.15.0/24, шлюз 192.168.15.1. Узлы k8s-testy-cp .120, w1–w3 .121–.123, gw1–gw2 .124–.125, metallb_vip 192.168.15.126, пользователь m.temerov. Путь к приватному ключу не задан: OpenSSH берёт ключ по умолчанию. Имена kubeadm совпадают с hostname.
 
-TestY целиком. Плейбук клонирует тег, подменяет gunicorn.conf.py и entrypoint, собирает образы и делает minikube image load. Состав сервисов совпадает с docker-compose релиза, включая PgBouncer и runworker notifications. Проверка: поды в namespace testy Ready, curl API возвращает {"status": "ok"}.
+kubeadm. Плейбук ставит зафиксированные пакеты, выключает swap, включает chrony, инициализирует control-plane и присоединяет остальные узлы. Если у virtio-диска есть свободное место, без перезагрузки расширяется последний раздел, PV, корневой LV и файловая система. Нет места — шаг пропускается. Повторный запуск не вызывает kubeadm init и join заново. Проверка: kubectl get nodes показывает шесть узлов Ready.
 
-TLS. openssl при деплое пишет CA и сертификат с SAN обоих имён в .secrets/tls, Secret testy-gateway-tls вешается на слушатели Gateway. В git ключей нет. Проверка: curl --cacert .secrets/tls/ca.crt к обоим именам даёт HTTP 200, без -k.
+Calico и пулы. Calico ставится до join. Затем узлы получают метки, gateway — taint. Проверка: два узла с taint NoSchedule, поды backend без этого toleration.
 
-Два маршрута. Разные hostname и sectionName у HTTPRoute. Frontend собран с VITE_APP_API_ROOT=https://api.testy.local. Проверка: тело UI содержит TestY TMS, тело /healthcheck/ — status ok.
+MetalLB. Helm 0.16.1, пул из одного адреса, L2Advertisement только с узлов gateway. VIP не прописывается на интерфейс ВМ. Проверка: EXTERNAL-IP Service Gateway равен metallb_vip, curl по HTTPS на этот адрес.
 
-HTTP к HTTPS. HTTPRoute с фильтром RequestRedirect, statusCode 301. Проверка: curl -sI на порт 80 возвращает 301.
+TestY и TLS. Образы собираются на машине оператора и импортируются в containerd. CA и сертификат лежат в .secrets/tls, в git их нет. Проверка: UI содержит TestY TMS, /healthcheck/ возвращает status ok, HTTP даёт 301.
 
-Prometheus. Helm kube-prometheus-stack, node-exporter с toleration Exists, чтобы цель была и на gateway-узлах. Дашборд TestY lab metrics смотрит sum by (job) (up). Проверка: запрос sum(up) через API Prometheus, значение не меньше 1.
+Наблюдаемость. kube-prometheus-stack и Loki через Helm, Fluentd читает access-лог. Проверка: PromQL up{job="kubelet"} не меньше одного target со значением 1, после curl LogQL находит строку testy-access.
 
-Grafana. Пароль в Secret lab-grafana-admin из .secrets/lab-credentials.env. Источники Prometheus (uid prometheus) и Loki (uid loki), дашборды из ConfigMap с меткой grafana_dashboard=1. Проверка: открыть оба дашборда под admin.
-
-Логи приложения. Sidecar nginx в поде backend пишет строку testy-access с методом и путём. Gunicorn тоже включён с тем же префиксом. Fluentd хвостает файлы accesslog, backend и envoy и шлёт их в Loki с job=testy-access. Проверка: curl с ?probe=lab..., затем LogQL {job="testy-access"} |= "testy-access" |= "probe=lab...". Строка должна найтись. Дашборд TestY lab logs показывает тот же поток.
-
-CI. GitHub Actions на ubuntu-24.04 ставит yamllint, Helm v3.22.0 и kubeconform v0.8.0 и запускает make lint: yamllint, helm template трёх чартов, kubeconform со схемами Kubernetes 1.37.0. Проверка: зелёный job manifests либо локальный make lint.
-
-Повторный деплой. Пароли и CA создаются один раз, helm upgrade --install и kubectl apply не сносят PVC. Проверка: второй make deploy и снова make verify.
+Без Proxmox. Те же шесть Debian 12 в одной L2-сети и заполненный инвентарь. Ubuntu 24.04 поддерживается тем же плейбуком. Плейбук не вызывает API Proxmox и не хранит токен.
 
 ## 3. Разбор
 
-Сильная сторона. Data plane отделён taint-ом: снаружи виден только Envoy на двух узлах, TestY остаётся на workers, а TLS и разные имена UI и API — это обычные объекты Gateway API, а не второй nginx. Access-лог, который ищет проверка, пишет sidecar приложения, не только Envoy.
+Сильная сторона. Data plane отделён taint-ом, снаружи виден один VIP MetalLB. Имена UI и API — обычные объекты Gateway API.
 
-Трудное решение. У релиза нет поддерживаемого публичного образа приложения, compose собирает его сам, а registry.testit.software использовать нельзя. Выбор был между вендорингом всего дерева TestY в этот репозиторий и клоном зафиксированного тега на этапе деплоя. Оставлен клон тега release/2.1.3: репозиторий лаборатории остаётся маленьким, версия воспроизводима, лицензия AGPL исходников не смешивается с манифестами.
+Трудное решение. У релиза нет публичного образа приложения, а чужой реестр использовать нельзя. Оставлен клон тега release/2.1.3 на этапе деплоя: репозиторий маленький, версия воспроизводима. Calico v3.32.2 выбран как последний релиз на момент фиксации; проект проверял его на Kubernetes 1.34–1.36, отдельного релиза под 1.37 не было.
 
 Дальше, если продолжать:
 
-- Job миграций и вторая реплика backend. Нужен отдельный migrate, общий PVC или объектное хранилище для медиа.
-- cert-manager и внутренний CA кластера вместо openssl на хосте. Нужен ещё один контроллер и доверие подов к этому CA.
-- Loki в object storage и больше одной реплики. Нужен S3-совместимый бакет и отказ от filesystem.
-- ResourceQuota и LimitRange после замера фактического потребления на 32 ГиБ, иначе квоты будут валить первые деплои.
-- Вынос Gateway с NodePort на внешний балансировщик. Нужен cloud provider или MetalLB и стабильные адреса имён.
+- Второй control-plane. Сейчас отказ одного узла гасит API.
+- cert-manager вместо openssl на машине оператора.
+- Хранилище с репликацией вместо local-path: PVC сейчас привязан к одному worker.
+- Вторая реплика backend после отдельной задачи миграций.
 
-Телеком. TestY — открытая TMS YADRO, ей пользуются при проверке телеком-оборудования. Стенд показывает лабораторный контур: портал тестов опубликован через Gateway API, узлы data plane отделены от узлов приложения, access-лог запроса инженера доходит до Loki. Это не контур абонентского трафика и не замена DPI или 5G core.
+Телеком. TestY — открытая TMS YADRO для проверки оборудования. Стенд показывает лабораторный контур: портал опубликован через Gateway API и MetalLB, узлы data plane отделены от приложения, access-лог доходит до Loki. Это не абонентский трафик и не замена DPI или 5G core.

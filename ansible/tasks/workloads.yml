@@ -1,0 +1,189 @@
+---
+- name: Apply namespaces
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl apply -f {{ repo_root }}/k8s/namespaces.yaml
+  changed_when: true
+
+- name: Load credentials
+  ansible.builtin.include_vars:
+    file: "{{ lab_credentials_json }}"
+
+- name: Create the TestY secret from the lab credentials
+  ansible.builtin.shell: |
+    set -euo pipefail
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl -n testy create secret generic testy-secrets \
+      --from-literal=POSTGRES_PASSWORD='{{ POSTGRES_PASSWORD }}' \
+      --from-literal=SECRET_KEY='{{ SECRET_KEY }}' \
+      --from-literal=SUPERUSER_PASSWORD='{{ SUPERUSER_PASSWORD }}' \
+      --dry-run=client -o yaml | {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl apply -f -
+  no_log: true
+  changed_when: true
+
+- name: Create the Gateway TLS secret
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl -n testy create secret tls testy-gateway-tls
+    --cert={{ lab_tls_dir }}/tls.crt
+    --key={{ lab_tls_dir }}/tls.key
+    --dry-run=client -o yaml
+  register: tls_secret
+  changed_when: false
+  no_log: true
+
+- name: Apply the Gateway TLS secret
+  ansible.builtin.shell: |
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl apply -f -
+  args:
+    stdin: "{{ tls_secret.stdout }}"
+  no_log: true
+  changed_when: true
+
+- name: Create the Grafana admin secret
+  ansible.builtin.shell: |
+    set -euo pipefail
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl -n monitoring create secret generic lab-grafana-admin \
+      --from-literal=admin-user='{{ GRAFANA_ADMIN_USER }}' \
+      --from-literal=admin-password='{{ GRAFANA_ADMIN_PASSWORD }}' \
+      --dry-run=client -o yaml | {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl apply -f -
+  no_log: true
+  changed_when: true
+
+- name: Add Helm chart repositories
+  ansible.builtin.shell: |
+    set -euo pipefail
+    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+    helm repo add grafana https://grafana.github.io/helm-charts
+    helm repo update
+  changed_when: false
+
+- name: Install or upgrade Envoy Gateway
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    helm upgrade --install eg oci://docker.io/envoyproxy/gateway-helm
+    --version {{ envoy_gateway_chart_version }}
+    --namespace envoy-gateway-system
+    --create-namespace
+    -f {{ repo_root }}/k8s/gateway/values-envoy.yaml
+    --wait --timeout 10m
+  changed_when: true
+
+- name: Render Gateway and TestY config for this inventory
+  ansible.builtin.command: >-
+    python3 {{ repo_root }}/scripts/render-lab-manifests.py
+    {{ repo_root }} {{ ui_host }} {{ api_host }} {{ metallb_vip }}
+    {{ lab_cache }}/rendered-lab
+  changed_when: true
+
+- name: Apply TestY data, the application and the Gateway
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl apply -f {{ item }}
+  loop:
+    - "{{ lab_cache }}/rendered-lab/data.yaml"
+    - "{{ repo_root }}/k8s/testy/app.yaml"
+    - "{{ lab_cache }}/rendered-lab/gateway.yaml"
+  changed_when: true
+
+- name: Install or upgrade Loki
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    helm upgrade --install loki grafana/loki
+    --version {{ loki_chart_version }}
+    --namespace logging
+    -f {{ repo_root }}/k8s/monitoring/values-loki.yaml
+    --wait --timeout 10m
+  changed_when: true
+
+- name: Install or upgrade kube-prometheus-stack
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack
+    --version {{ kube_prometheus_stack_version }}
+    --namespace monitoring
+    -f {{ repo_root }}/k8s/monitoring/values-prometheus.yaml
+    --wait --timeout 15m
+  changed_when: true
+
+- name: Apply Fluentd and the Grafana dashboards
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl apply -f {{ item }}
+  loop:
+    - "{{ repo_root }}/k8s/logging/fluentd.yaml"
+    - "{{ repo_root }}/k8s/monitoring/dashboards.yaml"
+  changed_when: true
+
+- name: Wait for PostgreSQL
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl -n testy rollout status statefulset/testy-postgres --timeout=600s
+  changed_when: false
+
+- name: Wait for TestY and the data plane
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl -n testy rollout status deployment/{{ item }} --timeout=600s
+  loop:
+    - testy-redis
+    - testy-pgbouncer
+    - testy-backend
+    - testy-celery
+    - testy-notifications
+    - testy-frontend
+  changed_when: false
+
+- name: Wait for the Envoy data plane
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl -n testy wait --for=condition=Available deployment
+    -l gateway.envoyproxy.io/owning-gateway-name=testy --timeout=300s
+  changed_when: false
+
+- name: Wait until MetalLB assigns the Gateway VIP
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ip="$({{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl get svc -A \
+      -l gateway.envoyproxy.io/owning-gateway-name=testy \
+      -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}')"
+    test "${ip}" = "{{ metallb_vip }}"
+  register: gateway_vip
+  changed_when: false
+  retries: 24
+  delay: 5
+  until: gateway_vip.rc == 0
+
+- name: Record pinned versions
+  ansible.builtin.copy:
+    dest: "{{ lab_secrets_dir }}/installed-versions.txt"
+    mode: "0644"
+    content: |
+      testy={{ testy_version }} commit={{ testy_git_commit }}
+      kubernetes={{ kubernetes_version }}
+      kubeadm={{ kubernetes_apt_version }}
+      kubelet={{ kubernetes_apt_version }}
+      kubectl={{ kubernetes_apt_version }}
+      containerd_debian={{ containerd_apt_version_debian }}
+      containerd_ubuntu={{ containerd_apt_version_ubuntu }}
+      containerd={{ hostvars[groups['control_plane'][0]].containerd_apt_version | default(containerd_apt_version_debian) }}
+      calico={{ calico_version }}
+      metallb={{ metallb_version }} chart={{ metallb_chart_version }}
+      local_path={{ local_path_version }}
+      pod_cidr={{ pod_cidr }}
+      metallb_vip={{ metallb_vip }}
+      ui_host={{ ui_host }}
+      api_host={{ api_host }}
+      envoy_gateway_chart={{ envoy_gateway_chart_version }}
+      kube_prometheus_stack={{ kube_prometheus_stack_version }}
+      prometheus={{ prometheus_version }}
+      prometheus_operator={{ prometheus_operator_version }}
+      alertmanager={{ alertmanager_version }}
+      grafana={{ grafana_version }}
+      loki_chart={{ loki_chart_version }}
+      loki={{ loki_version }}
+      fluentd={{ fluentd_version }}
+      fluent_plugin_grafana_loki={{ fluent_plugin_loki_version }}
+      postgres={{ postgres_image }}
+      redis={{ redis_image }}
+      pgbouncer={{ pgbouncer_image }}
+      nginx={{ nginx_image }}

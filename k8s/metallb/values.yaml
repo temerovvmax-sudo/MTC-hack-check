@@ -1,0 +1,31 @@
+---
+# MetalLB только в L2. FRR для BGP этому стенду не нужен.
+frrk8s:
+  enabled: false
+controller:
+  nodeSelector:
+    testy.yadro.dev/pool: app
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+speaker:
+  tolerateMaster: true
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: testy.yadro.dev/pool
+      operator: Equal
+      value: gateway
+      effect: NoSchedule
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi

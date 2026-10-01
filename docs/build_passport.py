@@ -33,8 +33,8 @@ def draw_diagram(pdf: Passport) -> None:
     pdf.set_text_color(20, 30, 40)
     rows = [
         (6, "пользователь"),
-        (14, "↓  HTTPS testy.local / api.testy.local"),
-        (22, "Gateway API, Envoy на двух узлах gateway"),
+        (14, "↓  HTTPS, VIP MetalLB, testy.local / api.testy.local"),
+        (22, "kubeadm: Envoy Gateway только на двух узлах gateway"),
         (30, "↓ UI-маршрут          ↓ API-маршрут"),
         (38, "TestY frontend        TestY API + sidecar access-log"),
     ]

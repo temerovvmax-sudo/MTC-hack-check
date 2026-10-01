@@ -28,6 +28,7 @@ mkdir -p "${RENDER}"
 
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null
 helm repo add grafana https://grafana.github.io/helm-charts >/dev/null
+helm repo add metallb https://metallb.github.io/metallb >/dev/null
 helm repo update >/dev/null
 
 helm template eg oci://docker.io/envoyproxy/gateway-helm \
@@ -35,6 +36,12 @@ helm template eg oci://docker.io/envoyproxy/gateway-helm \
   --namespace envoy-gateway-system \
   -f "${ROOT}/k8s/gateway/values-envoy.yaml" \
   > "${RENDER}/envoy-gateway.yaml"
+
+helm template eg-smoke oci://docker.io/envoyproxy/gateway-helm \
+  --version v1.9.2 \
+  --namespace envoy-gateway-system \
+  -f "${ROOT}/k8s/smoke/values-envoy.yaml" \
+  > "${RENDER}/envoy-gateway-smoke.yaml"
 
 helm template kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   --version 91.8.2 \
@@ -48,6 +55,12 @@ helm template loki grafana/loki \
   -f "${ROOT}/k8s/monitoring/values-loki.yaml" \
   > "${RENDER}/loki.yaml"
 
+helm template metallb metallb/metallb \
+  --version 0.16.1 \
+  --namespace metallb-system \
+  -f "${ROOT}/k8s/metallb/values.yaml" \
+  > "${RENDER}/metallb.yaml"
+
 K8S_VERSION="1.37.0"
 
 kubeconform -summary -strict \
@@ -58,8 +71,12 @@ kubeconform -summary -strict \
   "${ROOT}/k8s/namespaces.yaml" \
   "${ROOT}/k8s/testy" \
   "${ROOT}/k8s/gateway/gateway.yaml" \
+  "${ROOT}/k8s/smoke/testy.yaml" \
+  "${ROOT}/k8s/smoke/gateway.yaml" \
+  "${ROOT}/k8s/smoke/observability.yaml" \
   "${ROOT}/k8s/logging" \
   "${ROOT}/k8s/monitoring/dashboards.yaml" \
+  "${ROOT}/k8s/metallb/pool.yaml" \
   "${RENDER}"
 
 echo "lint ok (kubeconform kubernetes schema ${K8S_VERSION})"

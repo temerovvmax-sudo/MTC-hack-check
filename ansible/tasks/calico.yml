@@ -1,0 +1,13 @@
+---
+- name: Install Calico
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl apply --server-side --force-conflicts
+    -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml
+  changed_when: true
+
+- name: Wait until the control plane is Ready
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl wait --for=condition=Ready node/{{ groups['control_plane'][0] }} --timeout=600s
+  changed_when: false

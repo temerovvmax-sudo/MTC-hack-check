@@ -1,0 +1,45 @@
+---
+- name: Image stamp directory
+  ansible.builtin.file:
+    path: /var/lib/testy-lab
+    state: directory
+    mode: "0755"
+
+- name: Read the image stamp already imported on this node
+  ansible.builtin.slurp:
+    src: /var/lib/testy-lab/images.stamp
+  register: remote_stamp
+  failed_when: false
+
+- name: Choose which archives this node needs
+  ansible.builtin.set_fact:
+    local_image_stamp: "{{ lookup('file', lab_cache + '/image-build.stamp') }}"
+    remote_image_stamp: "{{ '' if remote_stamp.failed | default(true) else (remote_stamp.content | b64decode) }}"
+    lab_image_files: "{{ ['testy-fluentd.tar'] + (['testy-backend.tar', 'testy-frontend.tar'] if inventory_hostname in groups['workers'] else []) }}"
+
+- name: Import lab images into containerd
+  when: remote_image_stamp != local_image_stamp
+  block:
+    - name: Copy image archives
+      ansible.builtin.copy:
+        src: "{{ lab_cache }}/images/{{ item }}"
+        dest: "/var/tmp/{{ item }}"
+        mode: "0644"
+      loop: "{{ lab_image_files }}"
+
+    - name: Import archives into the k8s.io namespace
+      ansible.builtin.command: "ctr --namespace k8s.io images import /var/tmp/{{ item }}"
+      loop: "{{ lab_image_files }}"
+      changed_when: true
+
+    - name: Remove archives from the node
+      ansible.builtin.file:
+        path: "/var/tmp/{{ item }}"
+        state: absent
+      loop: "{{ lab_image_files }}"
+
+    - name: Record the imported stamp
+      ansible.builtin.copy:
+        dest: /var/lib/testy-lab/images.stamp
+        content: "{{ local_image_stamp }}"
+        mode: "0644"

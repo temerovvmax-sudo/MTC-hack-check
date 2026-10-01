@@ -1,0 +1,38 @@
+---
+- name: Write the kubeadm init config
+  ansible.builtin.template:
+    src: kubeadm-init.yaml.j2
+    dest: /root/kubeadm-init.yaml
+    mode: "0600"
+
+- name: Check whether the control plane is already initialised
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: admin_conf_file
+
+- name: Initialise the control plane
+  ansible.builtin.command: kubeadm init --config=/root/kubeadm-init.yaml
+  when: not admin_conf_file.stat.exists
+
+- name: Wait until the local API answers
+  ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes
+  register: api_nodes
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: api_nodes.rc == 0
+
+- name: Read the admin kubeconfig
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/admin.conf
+  register: admin_kubeconfig
+  no_log: true
+
+- name: Install the lab kubeconfig on the operator machine
+  ansible.builtin.copy:
+    dest: "{{ lab_kubeconfig }}"
+    content: "{{ admin_kubeconfig.content | b64decode }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true

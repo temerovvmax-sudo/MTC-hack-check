@@ -1,0 +1,466 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: testy-config
+  namespace: testy
+  labels:
+    app.kubernetes.io/part-of: testy-smoke
+data:
+  POSTGRES_NAME: testy
+  POSTGRES_USER: testy
+  POSTGRES_SERVICE_HOST: testy-postgres
+  POSTGRES_SERVICE_PORT: "5432"
+  REDIS_HOST: testy-redis
+  REDIS_PORT: "6379"
+  CELERY_BROKER_URL: redis://testy-redis:6379/0
+  CELERY_RESULT_BACKEND: redis://testy-redis:6379/1
+  ALLOWED_HOSTS: '["api.testy.local","testy.local","testy-backend","testy-backend.testy.svc","testy-backend.testy.svc.cluster.local","localhost"]'
+  CSRF_TRUSTED_ORIGINS: '["https://testy.local","https://api.testy.local"]'
+  COMPANY_DOMAIN: testy.local
+  SUPERUSER_USERNAME: admin
+  TESTY_ALLOW_FILE_RESPONSE: "True"
+  DJANGO_SETTINGS_MODULE: root.settings.production
+  WEB_CONCURRENCY: "1"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: testy-postgres
+  namespace: testy
+  labels:
+    app.kubernetes.io/name: testy-postgres
+    app.kubernetes.io/part-of: testy-smoke
+spec:
+  serviceName: testy-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: testy-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: testy-postgres
+        app.kubernetes.io/part-of: testy-smoke
+    spec:
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        fsGroup: 70
+        runAsUser: 70
+        runAsGroup: 70
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:14.5-alpine
+          imagePullPolicy: IfNotPresent
+          args:
+            - -c
+            - max_connections=40
+            - -c
+            - shared_buffers=32MB
+            - -c
+            - password_encryption=scram-sha-256
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: testy
+            - name: POSTGRES_DB
+              value: testy
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: testy-secrets
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: dshm
+              mountPath: /dev/shm
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "testy", "-d", "testy"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "testy", "-d", "testy"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: testy-postgres
+  namespace: testy
+spec:
+  selector:
+    app.kubernetes.io/name: testy-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: testy-redis
+  namespace: testy
+  labels:
+    app.kubernetes.io/name: testy-redis
+    app.kubernetes.io/part-of: testy-smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: testy-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: testy-redis
+        app.kubernetes.io/part-of: testy-smoke
+    spec:
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        fsGroup: 999
+        runAsUser: 999
+        runAsGroup: 999
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis:7.4.6-alpine
+          imagePullPolicy: IfNotPresent
+          args: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "32mb"]
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: testy-redis
+  namespace: testy
+spec:
+  selector:
+    app.kubernetes.io/name: testy-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: testy-accesslog-nginx
+  namespace: testy
+data:
+  nginx.conf: |
+    worker_processes 1;
+    error_log /dev/stderr warn;
+    pid /tmp/nginx.pid;
+    events {
+        worker_connections 128;
+    }
+    http {
+        map $http_upgrade $connection_upgrade {
+            default upgrade;
+            "" close;
+        }
+        client_body_temp_path /tmp/client_temp;
+        proxy_temp_path /tmp/proxy_temp;
+        fastcgi_temp_path /tmp/fastcgi_temp;
+        uwsgi_temp_path /tmp/uwsgi_temp;
+        scgi_temp_path /tmp/scgi_temp;
+        log_format testy_access 'testy-access remote=$remote_addr request="$request" status=$status bytes=$body_bytes_sent host=$host';
+        access_log /dev/stdout testy_access;
+        server {
+            listen 8080;
+            client_max_body_size 32m;
+            location / {
+                proxy_pass http://127.0.0.1:8000;
+                proxy_http_version 1.1;
+                proxy_set_header Host $http_host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto https;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection $connection_upgrade;
+            }
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: testy-backend
+  namespace: testy
+  labels:
+    app.kubernetes.io/name: testy-backend
+    app.kubernetes.io/part-of: testy-smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: testy-backend
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: testy-backend
+        app.kubernetes.io/part-of: testy-smoke
+    spec:
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend
+          image: testy-backend:2.1.3
+          imagePullPolicy: IfNotPresent
+          args: ["serve"]
+          ports:
+            - name: app
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: testy-config
+            - secretRef:
+                name: testy-secrets
+          volumeMounts:
+            - name: media
+              mountPath: /testy/media
+          startupProbe:
+            httpGet:
+              path: /healthcheck/
+              port: app
+              httpHeaders:
+                - name: Host
+                  value: api.testy.local
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /healthcheck/
+              port: app
+              httpHeaders:
+                - name: Host
+                  value: api.testy.local
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthcheck/
+              port: app
+              httpHeaders:
+                - name: Host
+                  value: api.testy.local
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 192Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+        - name: accesslog
+          image: nginxinc/nginx-unprivileged:1.27.5-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /healthcheck/
+              port: http
+              httpHeaders:
+                - name: Host
+                  value: api.testy.local
+            periodSeconds: 5
+          startupProbe:
+            httpGet:
+              path: /healthcheck/
+              port: http
+              httpHeaders:
+                - name: Host
+                  value: api.testy.local
+            periodSeconds: 10
+            failureThreshold: 60
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 48Mi
+          securityContext:
+            runAsUser: 101
+            runAsGroup: 101
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: media
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: nginx-conf
+          configMap:
+            name: testy-accesslog-nginx
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: testy-backend
+  namespace: testy
+spec:
+  selector:
+    app.kubernetes.io/name: testy-backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: testy-frontend
+  namespace: testy
+  labels:
+    app.kubernetes.io/name: testy-frontend
+    app.kubernetes.io/part-of: testy-smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: testy-frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: testy-frontend
+        app.kubernetes.io/part-of: testy-smoke
+    spec:
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: frontend
+          image: testy-frontend:2.1.3
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          securityContext:
+            runAsUser: 101
+            runAsGroup: 101
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: testy-frontend
+  namespace: testy
+spec:
+  selector:
+    app.kubernetes.io/name: testy-frontend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

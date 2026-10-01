@@ -1,10 +1,11 @@
 ---
-- name: Refuse any kubeconfig other than the lab file
+- name: Refuse any kubeconfig other than a lab file in this repository
   ansible.builtin.assert:
     that:
-      - lab_kubeconfig is regex('\\.kube/lab\\.config$')
-      - lab_kubeconfig is not regex('\\.kube/config$')
-    fail_msg: "Refusing to run without the lab kubeconfig under the repository."
+      - lab_kubeconfig is regex('/\\.kube/(lab|smoke)\\.config$')
+      - lab_kubeconfig is not regex('/\\.kube/config$')
+      - lookup('env', 'KUBECONFIG') == '' or lookup('env', 'KUBECONFIG') is match('^.*/\\.kube/(lab|smoke)\\.config$')
+    fail_msg: "Refusing to run unless KUBECONFIG is a lab file under the repository .kube/ directory."
 
 - name: Create lab directories
   ansible.builtin.file:
@@ -13,6 +14,5 @@
     mode: "0750"
   loop:
     - "{{ repo_root }}/.kube"
-    - "{{ lab_minikube_home }}"
     - "{{ lab_secrets_dir }}"
     - "{{ lab_cache }}"

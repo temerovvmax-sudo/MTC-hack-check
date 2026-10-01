@@ -1,0 +1,69 @@
+---
+- name: Require Debian 12 or Ubuntu 24.04 on the operator machine
+  ansible.builtin.assert:
+    that:
+      - >-
+        (ansible_distribution == "Debian" and ansible_distribution_release == "bookworm")
+        or (ansible_distribution == "Ubuntu" and ansible_distribution_release == "noble")
+    fail_msg: >-
+      make deploy запускается с Debian 12 или Ubuntu 24.04: там ставятся Docker, Helm и kubectl.
+      Найдено {{ ansible_distribution }} {{ ansible_distribution_version }}
+      ({{ ansible_distribution_release }}).
+
+- name: Install packages used to build and publish the lab
+  become: true
+  ansible.builtin.apt:
+    name:
+      - docker.io
+      - git
+      - openssl
+      - python3
+      - curl
+      - ca-certificates
+      - make
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Let the deploying user talk to Docker
+  become: true
+  ansible.builtin.user:
+    name: "{{ ansible_user_id }}"
+    groups: docker
+    append: true
+
+- name: Install pinned kubectl and Helm
+  ansible.builtin.command: "{{ repo_root }}/scripts/install-binaries.sh"
+  environment:
+    KUBECTL_VERSION: "{{ kubectl_version }}"
+    HELM_VERSION: "{{ helm_version }}"
+    KUBECONFORM_VERSION: "{{ kubeconform_version }}"
+    INSTALL_MINIKUBE: "0"
+  changed_when: true
+
+- name: Generate lab credentials once
+  ansible.builtin.command: >-
+    python3 {{ repo_root }}/scripts/generate-credentials.py
+    {{ lab_credentials_env }} {{ lab_credentials_json }}
+  register: credentials_cmd
+  changed_when: "'wrote' in credentials_cmd.stdout"
+
+- name: Generate the lab CA and Gateway certificate once
+  ansible.builtin.command: "{{ repo_root }}/scripts/generate-tls.sh"
+  environment:
+    UI_HOST: "{{ ui_host }}"
+    API_HOST: "{{ api_host }}"
+  register: tls_cmd
+  changed_when: "'wrote' in tls_cmd.stdout"
+
+- name: Build TestY images and export them for containerd
+  ansible.builtin.shell: >-
+    sg docker -c '{{ repo_root }}/scripts/build-images.sh'
+  environment:
+    TESTY_GIT_URL: "{{ testy_git_url }}"
+    TESTY_GIT_REF: "{{ testy_git_ref }}"
+    TESTY_GIT_COMMIT: "{{ testy_git_commit }}"
+    API_HOST: "{{ api_host }}"
+    SKIP_MINIKUBE_LOAD: "1"
+    EXPORT_IMAGES: "1"
+  changed_when: true

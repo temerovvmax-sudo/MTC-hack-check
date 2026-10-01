@@ -1,15 +1,23 @@
 #!/bin/bash
-# Run a command with the lab kubeconfig. Never touches ~/.kube/config.
+# Run a command with a kubeconfig inside this repository. Never touches ~/.kube/config.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export KUBECONFIG="${ROOT}/.kube/lab.config"
-export MINIKUBE_HOME="${ROOT}/.minikube"
-mkdir -p "${ROOT}/.kube" "${ROOT}/.minikube" "${ROOT}/.secrets"
-case "${KUBECONFIG}" in
-  */.kube/lab.config) ;;
-  *)
-    echo "refusing kubeconfig path: ${KUBECONFIG}" >&2
-    exit 1
-    ;;
-esac
+LAB="${ROOT}/.kube/lab.config"
+SMOKE="${ROOT}/.kube/smoke.config"
+if [[ -n "${KUBECONFIG:-}" ]]; then
+  case "${KUBECONFIG}" in
+    "${LAB}"|"${SMOKE}") ;;
+    *)
+      echo "refusing kubeconfig path: ${KUBECONFIG}" >&2
+      exit 1
+      ;;
+  esac
+else
+  export KUBECONFIG="${LAB}"
+fi
+mkdir -p "${ROOT}/.kube" "${ROOT}/.secrets"
+if [[ "${KUBECONFIG}" == "${SMOKE}" ]]; then
+  export MINIKUBE_HOME="${ROOT}/.minikube"
+  mkdir -p "${MINIKUBE_HOME}"
+fi
 exec "$@"

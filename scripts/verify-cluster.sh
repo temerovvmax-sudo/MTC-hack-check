@@ -1,19 +1,25 @@
 #!/bin/bash
-# Prove Gateway TLS, a Prometheus UP target, and a Fluentd access log in Loki.
+# Prove Gateway TLS via the MetalLB VIP, one Prometheus target, and an access log in Loki.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export KUBECONFIG="${ROOT}/.kube/lab.config"
-export MINIKUBE_HOME="${ROOT}/.minikube"
 export PATH="${HOME}/.local/bin:${PATH}"
-PROFILE="testy-lab"
+unset MINIKUBE_HOME || true
 
 if [[ ! -f "${KUBECONFIG}" ]]; then
   echo "lab kubeconfig is missing: ${KUBECONFIG}" >&2
   echo "run make deploy first" >&2
   exit 2
 fi
+case "${KUBECONFIG}" in
+  */.kube/lab.config) ;;
+  *)
+    echo "refusing kubeconfig ${KUBECONFIG}" >&2
+    exit 1
+    ;;
+esac
 
-python3 - "${ROOT}" "${PROFILE}" <<'PY'
+python3 - "${ROOT}" <<'PY'
 import json
 import os
 import subprocess
@@ -23,11 +29,13 @@ import urllib.parse
 from pathlib import Path
 
 root = Path(sys.argv[1])
-profile = sys.argv[2]
 env = os.environ.copy()
 kubeconfig = str(root / ".kube" / "lab.config")
 env["KUBECONFIG"] = kubeconfig
-env["MINIKUBE_HOME"] = str(root / ".minikube")
+env.pop("MINIKUBE_HOME", None)
+vip_expected = os.environ["METALLB_VIP"]
+ui_host = os.environ.get("UI_HOST", "testy.local")
+api_host = os.environ.get("API_HOST", "api.testy.local")
 
 def run(args, check=True, input_text=None):
     print("+", " ".join(args), flush=True)
@@ -46,10 +54,14 @@ if len(nodes["items"]) != 6:
     raise SystemExit(1)
 gateway = []
 app = []
+control = []
 for node in nodes["items"]:
     labels = node["metadata"].get("labels", {})
+    name = node["metadata"]["name"]
+    if "node-role.kubernetes.io/control-plane" in labels:
+        control.append(name)
     if labels.get("testy.yadro.dev/pool") == "gateway":
-        gateway.append(node["metadata"]["name"])
+        gateway.append(name)
         taints = node["spec"].get("taints", [])
         ok = any(
             t.get("key") == "testy.yadro.dev/pool"
@@ -58,41 +70,59 @@ for node in nodes["items"]:
             for t in taints
         )
         if not ok:
-            print(f"gateway node {node['metadata']['name']} is missing the NoSchedule taint", file=sys.stderr)
+            print(f"gateway node {name} is missing the NoSchedule taint", file=sys.stderr)
             raise SystemExit(1)
     elif labels.get("testy.yadro.dev/pool") == "app":
-        app.append(node["metadata"]["name"])
+        app.append(name)
+print(f"control-plane: {control}")
 print(f"gateway nodes: {gateway}")
 print(f"app nodes: {app}")
-if len(gateway) != 2 or len(app) != 3:
-    print("expected 2 gateway nodes and 3 app nodes", file=sys.stderr)
+if len(control) != 1 or len(gateway) != 2 or len(app) != 3:
+    print("expected 1 control-plane, 3 app nodes and 2 gateway nodes", file=sys.stderr)
     raise SystemExit(1)
 
-ip = run(["minikube", "ip", "-p", profile]).stdout.strip()
+pods = json.loads(run([
+    "kubectl", "get", "pods", "-A",
+    "-l", "gateway.envoyproxy.io/owning-gateway-name=testy",
+    "-o", "json",
+]).stdout)
+envoy_nodes = []
+for pod in pods["items"]:
+    if pod["status"].get("phase") != "Running":
+        continue
+    node_name = pod["spec"].get("nodeName")
+    envoy_nodes.append(node_name)
+    if node_name not in gateway:
+        print(f"envoy pod {pod['metadata']['name']} is on {node_name}, not a gateway node", file=sys.stderr)
+        raise SystemExit(1)
+if len(envoy_nodes) < 1:
+    print("no running Envoy data-plane pod", file=sys.stderr)
+    raise SystemExit(1)
+print(f"envoy data plane nodes: {envoy_nodes}")
+
 services = json.loads(run([
     "kubectl", "get", "svc", "-A",
     "-l", "gateway.envoyproxy.io/owning-gateway-name=testy",
     "-o", "json",
 ]).stdout)
-https_port = http_port = None
+vip = None
 for item in services["items"]:
-    for port in item["spec"].get("ports", []):
-        if port.get("port") == 443 and port.get("nodePort"):
-            https_port = port["nodePort"]
-        if port.get("port") == 80 and port.get("nodePort"):
-            http_port = port["nodePort"]
-if not https_port or not http_port:
-    print("gateway NodePorts were not found", file=sys.stderr)
-    print(json.dumps(services, indent=2))
+    if item["spec"].get("type") != "LoadBalancer":
+        continue
+    ingress = item.get("status", {}).get("loadBalancer", {}).get("ingress") or []
+    if ingress and ingress[0].get("ip"):
+        vip = ingress[0]["ip"]
+if vip != vip_expected:
+    print(f"gateway LoadBalancer IP is {vip}, inventory metallb_vip is {vip_expected}", file=sys.stderr)
     raise SystemExit(1)
-print(f"gateway https nodePort {https_port}, http nodePort {http_port}, node ip {ip}")
+print(f"gateway VIP {vip}")
 
 ca = root / ".secrets" / "tls" / "ca.crt"
 probe = f"probe=lab{int(time.time())}"
 ui = run([
     "curl", "-fsS", "--cacert", str(ca),
-    "--resolve", f"testy.local:{https_port}:{ip}",
-    f"https://testy.local:{https_port}/",
+    "--resolve", f"{ui_host}:443:{vip}",
+    f"https://{ui_host}/",
 ])
 if "TestY TMS" not in ui.stdout:
     print("UI body did not contain TestY TMS", file=sys.stderr)
@@ -101,8 +131,8 @@ print("UI route returned TestY TMS")
 
 api = run([
     "curl", "-fsS", "--cacert", str(ca),
-    "--resolve", f"api.testy.local:{https_port}:{ip}",
-    f"https://api.testy.local:{https_port}/healthcheck/?{probe}",
+    "--resolve", f"{api_host}:443:{vip}",
+    f"https://{api_host}/healthcheck/?{probe}",
 ])
 if '"status": "ok"' not in api.stdout.replace(" ", "") and '"status":"ok"' not in api.stdout.replace(" ", ""):
     print("API body was not {\"status\": \"ok\"}", file=sys.stderr)
@@ -112,10 +142,10 @@ print("API route returned status ok")
 
 redirect = run([
     "curl", "-sS", "-D", "-", "-o", "/dev/null",
-    "--resolve", f"testy.local:{http_port}:{ip}",
-    f"http://testy.local:{http_port}/",
+    "--resolve", f"{ui_host}:80:{vip}",
+    f"http://{ui_host}/",
 ])
-if "301" not in redirect.stdout and "302" not in redirect.stdout:
+if "301" not in redirect.stdout:
     print(redirect.stdout)
     print("HTTP listener did not redirect", file=sys.stderr)
     raise SystemExit(1)
@@ -136,21 +166,19 @@ prom = port_forward("monitoring", "svc/kube-prometheus-stack-prometheus", 19090,
 try:
     query = run([
         "curl", "-fsS", "-G", "http://127.0.0.1:19090/api/v1/query",
-        "--data-urlencode", "query=sum(up)",
+        "--data-urlencode", 'query=up{job="kubelet"}',
     ])
 finally:
     prom.terminate()
 payload = json.loads(query.stdout)
 results = payload.get("data", {}).get("result", [])
-if payload.get("status") != "success" or not results:
+up = [item for item in results if float(item["value"][1]) >= 1]
+if payload.get("status") != "success" or not up:
     print(query.stdout)
-    print("Prometheus query returned no series", file=sys.stderr)
+    print('Prometheus query up{job="kubelet"} returned no up target', file=sys.stderr)
     raise SystemExit(1)
-value = float(results[0]["value"][1])
-if value < 1:
-    print(query.stdout)
-    raise SystemExit(1)
-print(f"Prometheus sum(up) = {value}")
+sample = up[0].get("metric", {}).get("instance", "kubelet")
+print(f'Prometheus up{{job="kubelet"}} has {len(up)} target(s); one is {sample}')
 
 logql = '{job="testy-access"} |= "testy-access" |= "' + probe + '"'
 found = False

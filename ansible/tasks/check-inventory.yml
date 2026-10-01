@@ -1,0 +1,74 @@
+---
+- name: Require the kubeadm inventory groups
+  ansible.builtin.assert:
+    that:
+      - "'control_plane' in groups"
+      - "'workers' in groups"
+      - "'gateways' in groups"
+      - "'k8s_nodes' in groups"
+      - groups['control_plane'] | length == 1
+      - groups['workers'] | length == 3
+      - groups['gateways'] | length == 2
+      - groups['k8s_nodes'] | length == 6
+    fail_msg: >-
+      Нужен инвентарь с группами control_plane (1), workers (3), gateways (2).
+      Скопируйте ansible/inventory/hosts.example.ini в ansible/inventory/hosts.ini.
+
+- name: Require the fields the operator must fill
+  vars:
+    cp: "{{ groups['control_plane'][0] }}"
+  ansible.builtin.assert:
+    that:
+      - hostvars[cp].ansible_user is defined
+      - hostvars[cp].ansible_user != 'FILL'
+      - hostvars[cp].ansible_ssh_private_key_file is not defined or hostvars[cp].ansible_ssh_private_key_file not in ['', 'FILL']
+      - hostvars[cp].metallb_vip is defined
+      - hostvars[cp].metallb_vip is match('^([0-9]{1,3}\\.){3}[0-9]{1,3}$')
+      - hostvars[cp].ui_host is defined
+      - hostvars[cp].ui_host != 'FILL'
+      - hostvars[cp].api_host is defined
+      - hostvars[cp].api_host != 'FILL'
+    fail_msg: >-
+      Заполните в hosts.ini ansible_user, metallb_vip, ui_host и api_host.
+      Адреса узлов задаются как ansible_host.
+      ansible_ssh_private_key_file не задают: OpenSSH берёт ключ по умолчанию.
+
+- name: Require an ansible_host on every node
+  ansible.builtin.assert:
+    that:
+      - hostvars[item].ansible_host is defined
+      - hostvars[item].ansible_host is match('^([0-9]{1,3}\\.){3}[0-9]{1,3}$')
+      - hostvars[item].ansible_host != hostvars[groups['control_plane'][0]].metallb_vip
+    fail_msg: "У {{ item }} нет ansible_host, либо этот адрес совпадает с metallb_vip."
+  loop: "{{ groups['k8s_nodes'] }}"
+
+- name: Require six distinct node addresses
+  vars:
+    node_ips: "{{ groups['k8s_nodes'] | map('extract', hostvars, 'ansible_host') | list }}"
+  ansible.builtin.assert:
+    that:
+      - node_ips | unique | length == 6
+    fail_msg: "ansible_host узлов должны быть разными и не равны metallb_vip."
+
+- name: Remember gateway names and the VIP for later plays on localhost
+  ansible.builtin.set_fact:
+    metallb_vip: "{{ hostvars[groups['control_plane'][0]].metallb_vip }}"
+    ui_host: "{{ hostvars[groups['control_plane'][0]].ui_host }}"
+    api_host: "{{ hostvars[groups['control_plane'][0]].api_host }}"
+
+- name: Require the SSH private key when a path is set
+  when: hostvars[groups['control_plane'][0]].ansible_ssh_private_key_file is defined
+  ansible.builtin.stat:
+    path: "{{ hostvars[groups['control_plane'][0]].ansible_ssh_private_key_file | expanduser }}"
+  register: ssh_key
+
+- name: Fail when the given SSH private key is missing
+  when: hostvars[groups['control_plane'][0]].ansible_ssh_private_key_file is defined
+  ansible.builtin.assert:
+    that:
+      - ssh_key.stat.exists
+      - ssh_key.stat.isreg
+    fail_msg: >-
+      Не найден приватный ключ
+      {{ hostvars[groups['control_plane'][0]].ansible_ssh_private_key_file }}.
+      В git его класть не нужно. Путь можно не задавать: тогда OpenSSH берёт ключ по умолчанию.

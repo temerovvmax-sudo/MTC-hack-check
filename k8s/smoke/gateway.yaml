@@ -20,37 +20,22 @@ spec:
     type: Kubernetes
     kubernetes:
       envoyService:
-        type: LoadBalancer
-        externalTrafficPolicy: Local
-      envoyPDB:
-        minAvailable: 1
+        type: NodePort
       envoyDeployment:
-        replicas: 2
+        replicas: 1
         pod:
-          nodeSelector:
-            testy.yadro.dev/pool: gateway
           tolerations:
-            - key: testy.yadro.dev/pool
-              operator: Equal
-              value: gateway
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
               effect: NoSchedule
-          affinity:
-            podAntiAffinity:
-              preferredDuringSchedulingIgnoredDuringExecution:
-                - weight: 100
-                  podAffinityTerm:
-                    labelSelector:
-                      matchLabels:
-                        app.kubernetes.io/name: envoy
-                    topologyKey: kubernetes.io/hostname
         container:
           resources:
             requests:
-              cpu: 50m
-              memory: 128Mi
+              cpu: 25m
+              memory: 48Mi
             limits:
-              cpu: "1"
-              memory: 512Mi
+              cpu: 300m
+              memory: 128Mi
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
@@ -65,7 +50,7 @@ metadata:
   name: testy
   namespace: testy
   labels:
-    app.kubernetes.io/part-of: testy-lab
+    app.kubernetes.io/part-of: testy-smoke
 spec:
   gatewayClassName: eg
   infrastructure:

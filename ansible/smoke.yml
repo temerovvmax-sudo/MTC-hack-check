@@ -1,0 +1,283 @@
+---
+- name: Smoke-check TestY on one minikube node
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    lab_kubeconfig: "{{ repo_root }}/.kube/smoke.config"
+  environment:
+    KUBECONFIG: "{{ lab_kubeconfig }}"
+    MINIKUBE_HOME: "{{ lab_minikube_home }}"
+    MINIKUBE_PROFILE: "{{ smoke_profile }}"
+    DEBIAN_FRONTEND: noninteractive
+  tasks:
+    - ansible.builtin.import_tasks: tasks/guard.yml
+
+    - name: Read available memory
+      ansible.builtin.command: awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo
+      register: mem_available
+      changed_when: false
+
+    - name: Read free disk on the root filesystem
+      ansible.builtin.command: df -BG --output=avail /
+      register: disk_free
+      changed_when: false
+
+    - name: Refuse a smoke node that would leave the OS under 1 GiB
+      ansible.builtin.assert:
+        that:
+          - (smoke_nodes | int) == 1
+          - (smoke_memory_mb | int) <= 3072
+          - (mem_available.stdout | int) >= (smoke_min_available_ram_mb | int)
+          - ((mem_available.stdout | int) - (smoke_memory_mb | int)) >= (smoke_os_reserve_mb | int)
+          - (ansible_processor_vcpus | int) >= 2
+          - (disk_free.stdout_lines[-1] | regex_replace('[^0-9]', '') | int) >= 20
+        fail_msg: >-
+          Smoke keeps one node at {{ smoke_memory_mb }} MiB and leaves
+          {{ smoke_os_reserve_mb }} MiB for the OS. Need MemAvailable at least
+          {{ smoke_min_available_ram_mb }} MiB. Found {{ mem_available.stdout }} MiB,
+          CPUs {{ ansible_processor_vcpus }}, disk {{ disk_free.stdout_lines[-1] }}.
+          This profile does not start the six-node lab. make deploy is kubeadm
+          on six Debian 12 VMs and does not use this machine as a node.
+          The same playbook also accepts Ubuntu 24.04.
+
+    - name: Install base packages
+      become: true
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - git
+          - openssl
+          - python3
+          - curl
+          - ca-certificates
+          - conntrack
+          - socat
+          - make
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Let the deploying user talk to Docker
+      become: true
+      ansible.builtin.user:
+        name: "{{ ansible_user_id }}"
+        groups: docker
+        append: true
+
+    - name: Install pinned kubectl, minikube, Helm and kubeconform
+      ansible.builtin.command: "{{ repo_root }}/scripts/install-binaries.sh"
+      environment:
+        KUBECTL_VERSION: "{{ kubectl_version }}"
+        MINIKUBE_VERSION: "{{ minikube_version }}"
+        HELM_VERSION: "{{ helm_version }}"
+        KUBECONFORM_VERSION: "{{ kubeconform_version }}"
+      changed_when: true
+
+    - name: Generate lab credentials once
+      ansible.builtin.command: >-
+        python3 {{ repo_root }}/scripts/generate-credentials.py
+        {{ lab_credentials_env }} {{ lab_credentials_json }}
+      register: credentials_cmd
+      changed_when: "'wrote' in credentials_cmd.stdout"
+
+    - name: Generate the lab CA and Gateway certificate once
+      ansible.builtin.command: "{{ repo_root }}/scripts/generate-tls.sh"
+      register: tls_cmd
+      changed_when: "'wrote' in tls_cmd.stdout"
+
+    - name: Load credentials
+      ansible.builtin.include_vars:
+        file: "{{ lab_credentials_json }}"
+
+    - name: Build TestY images before the node takes its memory
+      ansible.builtin.shell: >-
+        sg docker -c '{{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        {{ repo_root }}/scripts/build-images.sh'
+      environment:
+        TESTY_GIT_URL: "{{ testy_git_url }}"
+        TESTY_GIT_REF: "{{ testy_git_ref }}"
+        TESTY_GIT_COMMIT: "{{ testy_git_commit }}"
+        MINIKUBE_PROFILE: "{{ smoke_profile }}"
+        NODE_HEAP: "{{ smoke_node_heap }}"
+        SKIP_IMAGE_BUILD: "1"
+        SKIP_MINIKUBE_LOAD: "1"
+      changed_when: true
+
+    - name: Start or reconcile the one-node smoke profile
+      ansible.builtin.shell: >-
+        sg docker -c '{{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        {{ repo_root }}/scripts/start-smoke-cluster.sh'
+      environment:
+        MINIKUBE_PROFILE: "{{ smoke_profile }}"
+        MINIKUBE_CPUS: "{{ smoke_cpus }}"
+        MINIKUBE_MEMORY_MB: "{{ smoke_memory_mb }}"
+        MINIKUBE_DISK: "{{ smoke_disk }}"
+        KUBERNETES_VERSION: "{{ kubernetes_version }}"
+      changed_when: true
+
+    - name: Load already built images into the smoke profile
+      ansible.builtin.shell: >-
+        sg docker -c '{{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        {{ repo_root }}/scripts/build-images.sh'
+      environment:
+        TESTY_GIT_URL: "{{ testy_git_url }}"
+        TESTY_GIT_REF: "{{ testy_git_ref }}"
+        TESTY_GIT_COMMIT: "{{ testy_git_commit }}"
+        MINIKUBE_PROFILE: "{{ smoke_profile }}"
+        SKIP_IMAGE_BUILD: "1"
+      changed_when: true
+
+    - name: Pull the small public images on the host
+      ansible.builtin.shell: >-
+        sg docker -c 'docker pull {{ item }}'
+      loop:
+        - "{{ postgres_image }}"
+        - "{{ redis_image }}"
+        - "{{ nginx_image }}"
+        - "quay.io/prometheus/prometheus:{{ prometheus_version }}"
+        - "grafana/loki:{{ loki_version }}"
+        - "docker.io/envoyproxy/gateway:{{ envoy_gateway_chart_version }}"
+      changed_when: true
+
+    - name: Load the small public images into the smoke profile
+      ansible.builtin.shell: >-
+        sg docker -c '{{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        minikube image load {{ item }} --profile={{ smoke_profile }}'
+      loop:
+        - "{{ postgres_image }}"
+        - "{{ redis_image }}"
+        - "{{ nginx_image }}"
+        - "quay.io/prometheus/prometheus:{{ prometheus_version }}"
+        - "grafana/loki:{{ loki_version }}"
+        - "docker.io/envoyproxy/gateway:{{ envoy_gateway_chart_version }}"
+      changed_when: true
+
+    - name: Apply namespaces
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl apply -f {{ repo_root }}/k8s/namespaces.yaml
+      changed_when: true
+
+    - name: Create the TestY secret from the lab credentials
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl -n testy create secret generic testy-secrets \
+          --from-literal=POSTGRES_PASSWORD='{{ POSTGRES_PASSWORD }}' \
+          --from-literal=SECRET_KEY='{{ SECRET_KEY }}' \
+          --from-literal=SUPERUSER_PASSWORD='{{ SUPERUSER_PASSWORD }}' \
+          --dry-run=client -o yaml | {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl apply -f -
+      no_log: true
+      changed_when: true
+
+    - name: Create the Gateway TLS secret
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl -n testy create secret tls testy-gateway-tls
+        --cert={{ lab_tls_dir }}/tls.crt
+        --key={{ lab_tls_dir }}/tls.key
+        --dry-run=client -o yaml
+      register: tls_secret
+      changed_when: false
+      no_log: true
+
+    - name: Apply the Gateway TLS secret
+      ansible.builtin.shell: |
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl apply -f -
+      args:
+        stdin: "{{ tls_secret.stdout }}"
+      no_log: true
+      changed_when: true
+
+    - name: Install or upgrade Envoy Gateway with the smoke values
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        helm upgrade --install eg oci://docker.io/envoyproxy/gateway-helm
+        --version {{ envoy_gateway_chart_version }}
+        --namespace envoy-gateway-system
+        --create-namespace
+        -f {{ repo_root }}/k8s/smoke/values-envoy.yaml
+        --wait --timeout 10m
+      changed_when: true
+
+    - name: Apply the slim TestY stack and the Gateway routes
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl apply -f {{ item }}
+      loop:
+        - "{{ repo_root }}/k8s/smoke/testy.yaml"
+        - "{{ repo_root }}/k8s/smoke/gateway.yaml"
+      changed_when: true
+
+    - name: Wait for PostgreSQL
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl -n testy rollout status statefulset/testy-postgres --timeout=300s
+      changed_when: false
+
+    - name: Wait for Redis, TestY and the frontend
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl -n testy rollout status deployment/{{ item }} --timeout=600s
+      loop:
+        - testy-redis
+        - testy-backend
+        - testy-frontend
+      changed_when: false
+
+    - name: Apply the tiny Prometheus and Loki
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl apply -f {{ repo_root }}/k8s/smoke/observability.yaml
+      changed_when: true
+
+    - name: Apply Fluentd
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl apply -f {{ repo_root }}/k8s/logging/fluentd.yaml
+      changed_when: true
+
+    - name: Wait for Prometheus
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl -n monitoring rollout status deployment/prometheus --timeout=300s
+      changed_when: false
+
+    - name: Wait for Loki
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl -n logging rollout status deployment/loki --timeout=300s
+      changed_when: false
+
+    - name: Wait for Fluentd
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl -n logging rollout status daemonset/fluentd --timeout=300s
+      changed_when: false
+
+    - name: Record the smoke profile that actually started
+      ansible.builtin.copy:
+        dest: "{{ lab_secrets_dir }}/smoke-versions.txt"
+        mode: "0644"
+        content: |
+          profile={{ smoke_profile }}
+          nodes={{ smoke_nodes }}
+          node_memory_mib={{ smoke_memory_mb }}
+          os_reserve_mib={{ smoke_os_reserve_mb }}
+          mem_available_mib={{ mem_available.stdout }}
+          testy={{ testy_version }} commit={{ testy_git_commit }}
+          kubernetes={{ kubernetes_version }}
+          envoy_gateway_chart={{ envoy_gateway_chart_version }}
+          prometheus=quay.io/prometheus/prometheus:{{ prometheus_version }}
+          loki=grafana/loki:{{ loki_version }}
+          grafana=skipped
+          kube_prometheus_stack=skipped
+          celery=skipped
+          notifications=skipped
+          pgbouncer=skipped
+
+    - name: Prove Gateway TLS, Prometheus and Loki
+      ansible.builtin.command: "{{ repo_root }}/scripts/verify-smoke.sh"
+      environment:
+        MINIKUBE_PROFILE: "{{ smoke_profile }}"
+      changed_when: false

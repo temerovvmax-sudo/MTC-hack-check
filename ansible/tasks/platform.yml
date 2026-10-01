@@ -1,0 +1,105 @@
+---
+- name: Label worker nodes for the application pool
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl label node {{ item }} {{ app_pool_label }}={{ app_pool_value }} --overwrite
+  loop: "{{ groups['workers'] }}"
+  changed_when: true
+
+- name: Clear a gateway taint if a worker was previously a gateway
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl taint node {{ item }} {{ app_pool_label }}-
+  loop: "{{ groups['workers'] }}"
+  register: worker_taint
+  failed_when: false
+  changed_when: false
+
+- name: Label gateway nodes
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl label node {{ item }} {{ app_pool_label }}={{ gateway_taint_value }} --overwrite
+  loop: "{{ groups['gateways'] }}"
+  changed_when: true
+
+- name: Taint gateway nodes so only the Envoy data plane is scheduled there
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl taint node {{ item }} {{ app_pool_label }}={{ gateway_taint_value }}:NoSchedule --overwrite
+  loop: "{{ groups['gateways'] }}"
+  changed_when: true
+
+- name: Wait until every node is Ready
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl wait --for=condition=Ready node --all --timeout=600s
+  changed_when: false
+
+- name: Install the local-path provisioner
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl apply -f
+    https://raw.githubusercontent.com/rancher/local-path-provisioner/{{ local_path_version }}/deploy/local-path-storage.yaml
+  changed_when: true
+
+- name: Write the local-path nodeSelector patch
+  ansible.builtin.copy:
+    dest: "{{ lab_cache }}/local-path-patch.json"
+    mode: "0644"
+    content: |
+      {"spec":{"template":{"spec":{"nodeSelector":{"{{ app_pool_label }}":"{{ app_pool_value }}"}}}}}
+
+- name: Keep the provisioner on worker nodes
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl -n local-path-storage patch deployment local-path-provisioner
+    --type=strategic --patch-file {{ lab_cache }}/local-path-patch.json
+  changed_when: true
+
+- name: Make local-path the default StorageClass
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl annotate storageclass local-path
+    storageclass.kubernetes.io/is-default-class=true --overwrite
+  changed_when: true
+
+- name: Wait for the local-path provisioner
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl -n local-path-storage rollout status deployment/local-path-provisioner --timeout=300s
+  changed_when: false
+
+- name: Add the MetalLB Helm repository
+  ansible.builtin.command: helm repo add metallb https://metallb.github.io/metallb
+  changed_when: false
+
+- name: Update Helm repositories
+  ansible.builtin.command: helm repo update
+  changed_when: false
+
+- name: Install or upgrade MetalLB
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    helm upgrade --install metallb metallb/metallb
+    --version {{ metallb_chart_version }}
+    --namespace metallb-system
+    --create-namespace
+    -f {{ repo_root }}/k8s/metallb/values.yaml
+    --wait --timeout 10m
+  changed_when: true
+
+- name: Render the MetalLB address pool
+  ansible.builtin.template:
+    src: metallb-pool.yaml.j2
+    dest: "{{ lab_cache }}/metallb-pool.yaml"
+    mode: "0644"
+
+- name: Apply the MetalLB L2 pool
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl apply -f {{ lab_cache }}/metallb-pool.yaml
+  register: metallb_pool
+  retries: 12
+  delay: 5
+  until: metallb_pool.rc == 0
+  changed_when: true

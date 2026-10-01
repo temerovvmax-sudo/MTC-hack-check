@@ -5,6 +5,7 @@ KUBECTL_VERSION="${KUBECTL_VERSION:-v1.37.0}"
 MINIKUBE_VERSION="${MINIKUBE_VERSION:-v1.39.0}"
 HELM_VERSION="${HELM_VERSION:-v3.22.0}"
 KUBECONFORM_VERSION="${KUBECONFORM_VERSION:-v0.8.0}"
+INSTALL_MINIKUBE="${INSTALL_MINIKUBE:-1}"
 
 need_root() {
   if [[ "$(id -u)" -eq 0 ]]; then
@@ -57,7 +58,13 @@ install_kubeconform() {
 }
 
 install_kubectl
-install_minikube
+if [[ "${INSTALL_MINIKUBE}" == "1" ]]; then
+  install_minikube
+fi
 install_helm
 install_kubeconform
-echo "binaries ready: kubectl ${KUBECTL_VERSION}, minikube ${MINIKUBE_VERSION}, helm ${HELM_VERSION}, kubeconform ${KUBECONFORM_VERSION}"
+if [[ "${INSTALL_MINIKUBE}" == "1" ]]; then
+  echo "binaries ready: kubectl ${KUBECTL_VERSION}, minikube ${MINIKUBE_VERSION}, helm ${HELM_VERSION}, kubeconform ${KUBECONFORM_VERSION}"
+else
+  echo "binaries ready: kubectl ${KUBECTL_VERSION}, helm ${HELM_VERSION}, kubeconform ${KUBECONFORM_VERSION}"
+fi

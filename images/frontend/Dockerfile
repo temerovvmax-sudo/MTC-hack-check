@@ -9,8 +9,9 @@ ARG VITE_APP_BUG_REPORT_URL=mailto:testy@yadro.com
 ENV VITE_APP_API_ROOT=${VITE_APP_API_ROOT} \
     VITE_APP_REPO_URL=${VITE_APP_REPO_URL} \
     VITE_APP_BUG_REPORT_URL=${VITE_APP_BUG_REPORT_URL} \
-    GENERATE_SOURCEMAP=false \
-    NODE_OPTIONS=--max_old_space_size=2048
+    GENERATE_SOURCEMAP=false
+ARG NODE_HEAP=2048
+ENV NODE_OPTIONS=--max_old_space_size=${NODE_HEAP}
 RUN npm run build
 
 FROM nginxinc/nginx-unprivileged:1.27.5-alpine

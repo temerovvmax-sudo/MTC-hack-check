@@ -1,0 +1,26 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 0,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "none"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}},
+      "targets": [
+        {"expr": "sum by (job) (up)", "legendFormat": "{{job}}", "refId": "A"}
+      ],
+      "title": "Prometheus targets UP by job",
+      "type": "timeseries"
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["testy", "metrics"],
+  "time": {"from": "now-1h", "to": "now"},
+  "timezone": "browser",
+  "title": "TestY lab metrics",
+  "uid": "testy-lab-metrics",
+  "version": 1
+}

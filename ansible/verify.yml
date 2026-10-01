@@ -1,0 +1,14 @@
+---
+- name: Verify the TestY lab
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ lab_kubeconfig }}"
+    MINIKUBE_HOME: "{{ lab_minikube_home }}"
+  tasks:
+    - ansible.builtin.import_tasks: tasks/guard.yml
+
+    - name: Curl the Gateway, query Prometheus and find the access log in Loki
+      ansible.builtin.command: "{{ repo_root }}/scripts/verify-cluster.sh"
+      changed_when: false

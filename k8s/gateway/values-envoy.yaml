@@ -1,0 +1,13 @@
+---
+deployment:
+  pod:
+    nodeSelector:
+      testy.yadro.dev/pool: app
+  envoyGateway:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 768Mi

@@ -1,0 +1,11 @@
+.kube/
+.minikube/
+.secrets/
+.cache/
+.ansible/
+*.retry
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.log

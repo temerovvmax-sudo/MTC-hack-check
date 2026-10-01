@@ -1,0 +1,25 @@
+---
+extends: default
+ignore: |
+  .cache/
+  .kube/
+  .minikube/
+  .secrets/
+  .git/
+  .ansible/
+rules:
+  line-length:
+    max: 180
+    allow-non-breakable-inline-mappings: true
+    allow-non-breakable-words: true
+  truthy:
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  document-start: enable
+  braces:
+    max-spaces-inside: 1
+  indentation:
+    spaces: 2
+    indent-sequences: true
+  comments-indentation: disable

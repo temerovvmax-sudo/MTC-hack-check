@@ -1,0 +1,248 @@
+---
+- name: Deploy the TestY lab
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  environment:
+    KUBECONFIG: "{{ lab_kubeconfig }}"
+    MINIKUBE_HOME: "{{ lab_minikube_home }}"
+    MINIKUBE_PROFILE: "{{ minikube_profile }}"
+    DEBIAN_FRONTEND: noninteractive
+  tasks:
+    - ansible.builtin.import_tasks: tasks/guard.yml
+
+    - name: Read available memory
+      ansible.builtin.command: awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo
+      register: mem_available
+      changed_when: false
+
+    - name: Read free disk on the root filesystem
+      ansible.builtin.command: df -BG --output=avail /
+      register: disk_free
+      changed_when: false
+
+    - name: Refuse to shrink the six-node lab when the machine is too small
+      ansible.builtin.assert:
+        that:
+          - (mem_available.stdout | int) >= (min_available_ram_mb | int)
+          - (ansible_processor_vcpus | int) >= (min_cpus | int)
+          - (disk_free.stdout_lines[-1] | regex_replace('[^0-9]', '') | int) >= (min_free_disk_gb | int)
+        fail_msg: >-
+          This lab keeps 6 minikube nodes (1 control-plane, 3 workers, 2 gateway)
+          and will not shrink. Need at least {{ min_available_ram_mb }} MiB MemAvailable,
+          {{ min_cpus }} CPUs and {{ min_free_disk_gb }} GiB free disk.
+          Found MemAvailable {{ mem_available.stdout }} MiB, CPUs {{ ansible_processor_vcpus }},
+          disk line {{ disk_free.stdout_lines[-1] }}.
+          Smallest change: provide a machine with about 32 GiB RAM and at least 22 GiB free.
+
+    - name: Install base packages
+      become: true
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - git
+          - openssl
+          - python3
+          - curl
+          - ca-certificates
+          - conntrack
+          - socat
+          - make
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Let the deploying user talk to Docker
+      become: true
+      ansible.builtin.user:
+        name: "{{ ansible_user_id }}"
+        groups: docker
+        append: true
+
+    - name: Install pinned kubectl, minikube, Helm and kubeconform
+      ansible.builtin.command: "{{ repo_root }}/scripts/install-binaries.sh"
+      environment:
+        KUBECTL_VERSION: "{{ kubectl_version }}"
+        MINIKUBE_VERSION: "{{ minikube_version }}"
+        HELM_VERSION: "{{ helm_version }}"
+        KUBECONFORM_VERSION: "{{ kubeconform_version }}"
+      changed_when: true
+
+    - name: Generate lab credentials once
+      ansible.builtin.command: >-
+        python3 {{ repo_root }}/scripts/generate-credentials.py
+        {{ lab_credentials_env }} {{ lab_credentials_json }}
+      register: credentials_cmd
+      changed_when: "'wrote' in credentials_cmd.stdout"
+
+    - name: Generate the lab CA and Gateway certificate once
+      ansible.builtin.command: "{{ repo_root }}/scripts/generate-tls.sh"
+      register: tls_cmd
+      changed_when: "'wrote' in tls_cmd.stdout"
+
+    - name: Load credentials
+      ansible.builtin.include_vars:
+        file: "{{ lab_credentials_json }}"
+
+    - name: Start or reconcile the six-node minikube profile
+      ansible.builtin.shell: >-
+        sg docker -c '{{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        {{ repo_root }}/scripts/start-cluster.sh'
+      environment:
+        MINIKUBE_PROFILE: "{{ minikube_profile }}"
+        MINIKUBE_NODES: "{{ minikube_nodes }}"
+        MINIKUBE_CPUS: "{{ minikube_cpus }}"
+        MINIKUBE_MEMORY_MB: "{{ minikube_memory_mb }}"
+        MINIKUBE_DISK: "{{ minikube_disk }}"
+        KUBERNETES_VERSION: "{{ kubernetes_version }}"
+      changed_when: true
+
+    - name: Build TestY images and load them into the cluster
+      ansible.builtin.shell: >-
+        sg docker -c '{{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        {{ repo_root }}/scripts/build-images.sh'
+      environment:
+        TESTY_GIT_URL: "{{ testy_git_url }}"
+        TESTY_GIT_REF: "{{ testy_git_ref }}"
+        TESTY_GIT_COMMIT: "{{ testy_git_commit }}"
+        MINIKUBE_PROFILE: "{{ minikube_profile }}"
+      changed_when: true
+
+    - name: Apply namespaces
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl apply -f {{ repo_root }}/k8s/namespaces.yaml
+      changed_when: true
+
+    - name: Create the TestY secret from the lab credentials
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl -n testy create secret generic testy-secrets \
+          --from-literal=POSTGRES_PASSWORD='{{ POSTGRES_PASSWORD }}' \
+          --from-literal=SECRET_KEY='{{ SECRET_KEY }}' \
+          --from-literal=SUPERUSER_PASSWORD='{{ SUPERUSER_PASSWORD }}' \
+          --dry-run=client -o yaml | {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl apply -f -
+      no_log: true
+      changed_when: true
+
+    - name: Create the Gateway TLS secret
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl -n testy create secret tls testy-gateway-tls
+        --cert={{ lab_tls_dir }}/tls.crt
+        --key={{ lab_tls_dir }}/tls.key
+        --dry-run=client -o yaml
+      register: tls_secret
+      changed_when: false
+      no_log: true
+
+    - name: Apply the Gateway TLS secret
+      ansible.builtin.shell: |
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl apply -f -
+      args:
+        stdin: "{{ tls_secret.stdout }}"
+      no_log: true
+      changed_when: true
+
+    - name: Create the Grafana admin secret
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl -n monitoring create secret generic lab-grafana-admin \
+          --from-literal=admin-user='{{ GRAFANA_ADMIN_USER }}' \
+          --from-literal=admin-password='{{ GRAFANA_ADMIN_PASSWORD }}' \
+          --dry-run=client -o yaml | {{ repo_root }}/scripts/with-lab-kubeconfig.sh kubectl apply -f -
+      no_log: true
+      changed_when: true
+
+    - name: Add Helm chart repositories
+      ansible.builtin.shell: |
+        set -euo pipefail
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo add grafana https://grafana.github.io/helm-charts
+        helm repo update
+      changed_when: false
+
+    - name: Install or upgrade Envoy Gateway
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        helm upgrade --install eg oci://docker.io/envoyproxy/gateway-helm
+        --version {{ envoy_gateway_chart_version }}
+        --namespace envoy-gateway-system
+        --create-namespace
+        -f {{ repo_root }}/k8s/gateway/values-envoy.yaml
+        --wait --timeout 10m
+      changed_when: true
+
+    - name: Install or upgrade Loki
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        helm upgrade --install loki grafana/loki
+        --version {{ loki_chart_version }}
+        --namespace logging
+        -f {{ repo_root }}/k8s/monitoring/values-loki.yaml
+        --wait --timeout 10m
+      changed_when: true
+
+    - name: Install or upgrade kube-prometheus-stack
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack
+        --version {{ kube_prometheus_stack_version }}
+        --namespace monitoring
+        -f {{ repo_root }}/k8s/monitoring/values-prometheus.yaml
+        --wait --timeout 15m
+      changed_when: true
+
+    - name: Apply application, gateway and logging manifests
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl apply -f {{ item }}
+      loop:
+        - "{{ repo_root }}/k8s/testy/data.yaml"
+        - "{{ repo_root }}/k8s/testy/app.yaml"
+        - "{{ repo_root }}/k8s/gateway/gateway.yaml"
+        - "{{ repo_root }}/k8s/logging/fluentd.yaml"
+        - "{{ repo_root }}/k8s/monitoring/dashboards.yaml"
+      changed_when: true
+
+    - name: Wait for PostgreSQL
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl -n testy rollout status statefulset/testy-postgres --timeout=600s
+      changed_when: false
+
+    - name: Wait for TestY and the data plane
+      ansible.builtin.command: >-
+        {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+        kubectl -n testy rollout status deployment/{{ item }} --timeout=600s
+      loop:
+        - testy-redis
+        - testy-pgbouncer
+        - testy-backend
+        - testy-celery
+        - testy-notifications
+        - testy-frontend
+      changed_when: false
+
+    - name: Record pinned versions
+      ansible.builtin.copy:
+        dest: "{{ lab_secrets_dir }}/installed-versions.txt"
+        mode: "0644"
+        content: |
+          testy={{ testy_version }} commit={{ testy_git_commit }}
+          kubernetes={{ kubernetes_version }}
+          minikube={{ minikube_version }}
+          envoy_gateway_chart={{ envoy_gateway_chart_version }}
+          kube_prometheus_stack={{ kube_prometheus_stack_version }}
+          prometheus={{ prometheus_version }}
+          prometheus_operator={{ prometheus_operator_version }}
+          alertmanager={{ alertmanager_version }}
+          grafana={{ grafana_version }}
+          loki_chart={{ loki_chart_version }}
+          loki={{ loki_version }}
+          fluentd={{ fluentd_version }}
+          fluent_plugin_grafana_loki={{ fluent_plugin_loki_version }}
+          postgres={{ postgres_image }}
+          redis={{ redis_image }}
+          pgbouncer={{ pgbouncer_image }}
+          nginx={{ nginx_image }}

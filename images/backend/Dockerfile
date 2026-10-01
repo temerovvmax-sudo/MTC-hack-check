@@ -22,4 +22,5 @@ RUN chmod 0755 /testy/scripts/entrypoint.sh \
 
 USER testy
 EXPOSE 8000
+ENTRYPOINT ["/testy/scripts/entrypoint.sh"]
 CMD ["serve"]

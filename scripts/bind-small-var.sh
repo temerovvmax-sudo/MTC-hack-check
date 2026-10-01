@@ -1,8 +1,9 @@
 #!/bin/bash
 # If /var or the container runtime directories are on a filesystem smaller
 # than 8GiB, bind-mount directories on the root filesystem over them and
-# record that in fstab. Do the same for /var/log when its filesystem is
-# under 4GiB. No reboot, no lvreduce, no format.
+# record that in fstab. /var/tmp is included so image tarballs are not
+# copied onto the small /var filesystem. Do the same for /var/log when its
+# filesystem is under 4GiB. No reboot, no lvreduce, no format.
 set -euo pipefail
 
 say() {
@@ -133,6 +134,14 @@ if [[ "${runtime_small}" -eq 1 ]] \
   bind_one /opt/containerd /var/lib/containerd "${runtime_limit}" "8G"
 else
   say "skip: docker and containerd filesystems are at least 8G"
+fi
+
+if [[ "$(fs_field SIZE "${prefix}/var")" -lt "${runtime_limit}" ]] \
+  || [[ "$(fs_field SIZE "${prefix}/var/tmp")" -lt "${runtime_limit}" ]] \
+  || [[ "$(mounted_source "${prefix}/var/tmp")" == "${prefix}/opt/tmp" ]]; then
+  bind_one /opt/tmp /var/tmp "${runtime_limit}" "8G"
+else
+  say "skip: /var/tmp filesystem is at least 8G"
 fi
 
 if [[ "$(fs_field SIZE "${prefix}/var/log")" -lt "${log_limit}" ]] \

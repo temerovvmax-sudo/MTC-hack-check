@@ -56,7 +56,7 @@
       На {{ inventory_hostname }} свободно меньше 15 ГиБ на /.
       Строка df: {{ disk_free.stdout_lines[-1] }}.
 
-- name: Bind Docker, containerd, and logs off a small /var
+- name: Bind Docker, containerd, /var/tmp, and logs off a small /var
   ansible.builtin.script:
     cmd: "{{ repo_root }}/scripts/bind-small-var.sh"
     executable: /bin/bash

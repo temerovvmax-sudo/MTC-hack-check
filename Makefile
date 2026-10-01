@@ -3,7 +3,7 @@ export KUBECONFIG := $(ROOT)/.kube/lab.config
 export PATH := $(HOME)/.local/bin:$(PATH)
 INVENTORY := $(ROOT)/ansible/inventory/hosts.ini
 
-.PHONY: deploy verify lint passport smoke
+.PHONY: deploy verify lint smoke
 
 deploy:
 	@test -f "$(INVENTORY)" || { echo "Скопируйте ansible/inventory/hosts.example.ini в ansible/inventory/hosts.ini и заполните его."; exit 1; }
@@ -22,6 +22,3 @@ smoke:
 
 lint:
 	bash "$(ROOT)/scripts/lint.sh"
-
-passport:
-	python3 "$(ROOT)/docs/build_passport.py"

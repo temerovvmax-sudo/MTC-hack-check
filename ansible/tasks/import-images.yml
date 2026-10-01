@@ -21,27 +21,21 @@
 - name: Import lab images into containerd
   when: remote_image_stamp != local_image_stamp
   block:
-    - name: Image archive directory on the root filesystem
-      ansible.builtin.file:
-        path: /opt/tmp
-        state: directory
-        mode: "1777"
-
     - name: Copy image archives
       ansible.builtin.copy:
         src: "{{ lab_cache }}/images/{{ item }}"
-        dest: "/opt/tmp/{{ item }}"
+        dest: "/var/tmp/{{ item }}"
         mode: "0644"
       loop: "{{ lab_image_files }}"
 
     - name: Import archives into the k8s.io namespace
-      ansible.builtin.command: "ctr --namespace k8s.io images import /opt/tmp/{{ item }}"
+      ansible.builtin.command: "ctr --namespace k8s.io images import /var/tmp/{{ item }}"
       loop: "{{ lab_image_files }}"
       changed_when: true
 
     - name: Remove archives from the node
       ansible.builtin.file:
-        path: "/opt/tmp/{{ item }}"
+        path: "/var/tmp/{{ item }}"
         state: absent
       loop: "{{ lab_image_files }}"
 

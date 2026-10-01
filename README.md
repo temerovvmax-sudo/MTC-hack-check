@@ -91,10 +91,6 @@ CNI — Calico, pod CIDR `192.168.0.0/16`. kube-proxy в режиме iptables: 
 
 Образ — Debian 12. Пользователь — `m.temerov`. Имена и адреса — `k8s-testy-cp` … `k8s-testy-gw2` и VIP `192.168.15.120`–`192.168.15.126` из таблицы. У каждой ВМ свой статический IPv4 на `vmbr0`, диск virtio, включённый в параметрах ВМ QEMU Guest Agent. Имя ВМ и hostname гостя совпадают с именем в инвентаре: kubeadm называет узел этим именем.
 
-Корневая файловая система на LVM, физический том — последний раздел virtio- или SCSI-диска. Если диск в Proxmox увеличили, повторный `make deploy` без перезагрузки перечитывает размер, расширяет последний раздел (`growpart`), делает `pvresize` и `lvextend -l +100%FREE`, затем `resize2fs` или `xfs_growfs`. Свободного места нет — шаг заканчивается без ошибки и ничего не меняет.
-
-Если `/var` или каталоги Docker и containerd лежат на файловой системе меньше 8 ГиБ, плейбук без перезагрузки монтирует `/opt/docker` на `/var/lib/docker`, `/opt/containerd` на `/var/lib/containerd` и `/opt/tmp` на `/var/tmp`. Каталоги находятся на корневой файловой системе, строки bind пишутся в fstab. Архивы образов копируются в `/opt/tmp`, а не на маленький `/var`. Если файловая система `/var/log` меньше 4 ГиБ, так же монтируется `/opt/log` на `/var/log`. Раздел не уменьшают и не форматируют. Повторный запуск ничего не меняет, если монтирование уже есть.
-
 Cloud-init в интерфейсе Proxmox: пользователь `m.temerov`, публичный SSH-ключ, DNS, адрес и шлюз из таблицы. Дополнительный сниппет, без токена API:
 
 ```yaml
@@ -176,7 +172,7 @@ export KUBECONFIG="$PWD/.kube/lab.config"
 ansible-playbook -i ansible/inventory/hosts.ini ansible/deploy.yml
 ```
 
-`make deploy` выставляет `KUBECONFIG` на `.kube/lab.config`. Повторный запуск идемпотентен: пакеты удерживаются `apt-mark hold`, расширение LVM ничего не делает, если у диска нет свободного места, `kubeadm init` и `kubeadm join` пропускаются, если узел уже в кластере, образы не пересобираются при том же коммите и имени API, `helm upgrade --install` и `kubectl apply` не удаляют PVC, пароли и CA берутся из уже созданных файлов.
+`make deploy` выставляет `KUBECONFIG` на `.kube/lab.config`. Повторный запуск идемпотентен: пакеты удерживаются `apt-mark hold`, `kubeadm init` и `kubeadm join` пропускаются, если узел уже в кластере, образы не пересобираются при том же коммите и имени API, `helm upgrade --install` и `kubectl apply` не удаляют PVC, пароли и CA берутся из уже созданных файлов.
 
 Учётные данные лаборатории:
 
@@ -267,7 +263,6 @@ Fluentd работает не от root: uid `999` и gid `999` из образ�
 - probes, в том числе долгий startup у backend
 - PodDisruptionBudget у PostgreSQL, Redis, PgBouncer, backend, Celery, notifications, frontend и у Envoy (`minAvailable: 1`)
 - CI: `.github/workflows/manifests.yml` запускает `make lint`
-- паспорт: `docs/Паспорт.pdf`, исходник `docs/passport.md`
 
 ResourceQuota нет: на этих шести узлах она делает стенд хрупким.
 
@@ -283,7 +278,6 @@ make smoke
 
 - Кластер этим репозиторием не создавался. `make deploy` рассчитан на шесть уже существующих ВМ Debian 12. Ubuntu 24.04 проходит по той же ветке `ansible_distribution`.
 - containerd на Debian 12 — пакет bookworm `1.6.20~ds1-1+deb12u3`, не сборка Ubuntu `2.2.1`. Пакет kubelet от версии containerd не зависит. Сочетание на ВМ отсюда не устанавливалось.
-- Расширение корня трогает только диск корневого LV. Корень не на LVM — шаг пропускается. Перезагрузки нет.
 - Один control-plane. Отказ `k8s-testy-cp` останавливает API.
 - MetalLB только L2 и только один VIP в той же подсети, что и узлы. Облачного балансировщика нет. Адрес VIP должен быть свободен.
 - Calico v3.32.2 — последний релиз на момент фиксации. Проект Calico проверял эту ветку на Kubernetes 1.34–1.36. Отдельной версии под 1.37 не было, поэтому стенд использует v3.32.2 без заявления, что она входит в матрицу тестов Calico.

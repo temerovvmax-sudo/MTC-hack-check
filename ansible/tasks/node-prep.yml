@@ -28,20 +28,9 @@
       - iptables
       - ethtool
       - python3
-      - cloud-guest-utils
-      - lvm2
-      - e2fsprogs
-      - xfsprogs
     state: present
     update_cache: true
     cache_valid_time: 3600
-
-- name: Grow the root LVM online when the disk has free space
-  ansible.builtin.script:
-    cmd: "{{ repo_root }}/scripts/grow-root-lvm.sh"
-    executable: /bin/bash
-  register: root_lvm_grow
-  changed_when: root_lvm_grow.stdout is search('(?m)^grew ')
 
 - name: Require free disk for images and etcd
   ansible.builtin.command: df -BG --output=avail /
@@ -55,13 +44,6 @@
     fail_msg: >-
       На {{ inventory_hostname }} свободно меньше 15 ГиБ на /.
       Строка df: {{ disk_free.stdout_lines[-1] }}.
-
-- name: Bind Docker, containerd, /var/tmp, and logs off a small /var
-  ansible.builtin.script:
-    cmd: "{{ repo_root }}/scripts/bind-small-var.sh"
-    executable: /bin/bash
-  register: small_var_bind
-  changed_when: small_var_bind.stdout is search('(?m)^(bound |fstab |moved )')
 
 - name: Turn swap off
   ansible.builtin.command: swapoff -a

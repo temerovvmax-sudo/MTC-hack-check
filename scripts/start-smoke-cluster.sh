@@ -1,5 +1,4 @@
 #!/bin/bash
-# One-node smoke profile. Never uses the default kubeconfig.
 set -euo pipefail
 : "${KUBECONFIG:?KUBECONFIG must be the lab file}"
 : "${MINIKUBE_HOME:?MINIKUBE_HOME must be the lab directory}"

@@ -1,5 +1,4 @@
 #!/bin/bash
-# Prove Gateway TLS via the MetalLB VIP, one Prometheus target, and an access log in Loki.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export KUBECONFIG="${ROOT}/.kube/lab.config"

@@ -1,5 +1,4 @@
 ---
-# MetalLB только в L2. FRR для BGP этому стенду не нужен.
 frrk8s:
   enabled: false
 controller:

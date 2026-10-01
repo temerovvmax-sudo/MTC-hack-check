@@ -1,5 +1,4 @@
 #!/bin/bash
-# Install pinned lab binaries under /usr/local/bin. Does not start a cluster.
 set -euo pipefail
 KUBECTL_VERSION="${KUBECTL_VERSION:-v1.37.0}"
 MINIKUBE_VERSION="${MINIKUBE_VERSION:-v1.39.0}"

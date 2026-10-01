@@ -1,5 +1,4 @@
 #!/bin/bash
-# Prove the one-node smoke profile: Gateway TLS, one Prometheus target, one Loki line.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export KUBECONFIG="${ROOT}/.kube/smoke.config"

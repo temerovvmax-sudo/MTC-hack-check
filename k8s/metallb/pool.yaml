@@ -1,7 +1,4 @@
 ---
-# Пример пула для плана Proxmox из README (VIP 192.168.15.126).
-# make deploy этот файл не применяет: плейбук рендерит ansible/templates/metallb-pool.yaml.j2
-# из metallb_vip инвентаря.
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:

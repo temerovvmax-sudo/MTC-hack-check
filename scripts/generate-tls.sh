@@ -1,5 +1,4 @@
 #!/bin/bash
-# Self-signed lab CA and a certificate for the Gateway hostnames.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UI_HOST="${UI_HOST:-testy.local}"

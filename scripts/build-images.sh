@@ -1,7 +1,4 @@
 #!/bin/bash
-# Clone pinned TestY and build lab images.
-# kubeadm deploy exports tarballs (EXPORT_IMAGES=1, SKIP_MINIKUBE_LOAD=1).
-# The optional smoke profile still loads images into minikube.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="${ROOT}/.cache/testy-src"

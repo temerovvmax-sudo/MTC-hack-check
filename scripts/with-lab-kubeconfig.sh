@@ -1,5 +1,4 @@
 #!/bin/bash
-# Run a command with a kubeconfig inside this repository. Never touches ~/.kube/config.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAB="${ROOT}/.kube/lab.config"

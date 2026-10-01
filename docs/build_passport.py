@@ -43,7 +43,7 @@ def draw_diagram(pdf: Passport) -> None:
         pdf.cell(width - 8, 5, text)
     pdf.set_xy(x0, y0 + height + 1)
     pdf.set_font("DejaVu", "", 8)
-    pdf.multi_cell(width, 4, "Рядом: Prometheus и Grafana смотрят метрики; Fluentd забирает access-лог и пишет в Loki, Grafana читает Loki.")
+    pdf.multi_cell(width, 4, "Рядом: Prometheus и Grafana показывают метрики; Fluentd забирает access-лог и пишет в Loki, Grafana читает Loki.")
     pdf.ln(1)
 
 

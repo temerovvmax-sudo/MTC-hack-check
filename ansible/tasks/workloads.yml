@@ -99,6 +99,16 @@
     --wait --timeout 10m
   changed_when: true
 
+- name: Allow node-exporter in the monitoring namespace
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl label namespace monitoring
+    pod-security.kubernetes.io/enforce=privileged
+    pod-security.kubernetes.io/audit=privileged
+    pod-security.kubernetes.io/warn=privileged
+    --overwrite
+  changed_when: true
+
 - name: Install or upgrade kube-prometheus-stack
   ansible.builtin.command: >-
     {{ repo_root }}/scripts/with-lab-kubeconfig.sh
@@ -107,6 +117,16 @@
     --namespace monitoring
     -f {{ repo_root }}/k8s/monitoring/values-prometheus.yaml
     --wait --timeout 40m
+  changed_when: true
+
+- name: Allow Fluentd hostPath in the logging namespace
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl label namespace logging
+    pod-security.kubernetes.io/enforce=privileged
+    pod-security.kubernetes.io/audit=privileged
+    pod-security.kubernetes.io/warn=privileged
+    --overwrite
   changed_when: true
 
 - name: Apply Fluentd and the Grafana dashboards

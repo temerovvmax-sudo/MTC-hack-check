@@ -12,7 +12,9 @@ kind: Namespace
 metadata:
   name: monitoring
   labels:
-    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
     app.kubernetes.io/part-of: testy-lab
 ---
 apiVersion: v1
@@ -20,7 +22,9 @@ kind: Namespace
 metadata:
   name: logging
   labels:
-    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
     app.kubernetes.io/part-of: testy-lab
 ---
 apiVersion: v1

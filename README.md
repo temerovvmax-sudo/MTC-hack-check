@@ -251,7 +251,7 @@ Fluentd работает от root и не privileged: ему нужно чит�
 
 ## Дополнительно
 
-- namespaces `testy`, `monitoring`, `logging`, `envoy-gateway-system`, Pod Security `baseline`
+- namespaces `testy` и `envoy-gateway-system` — Pod Security `baseline`; `monitoring` и `logging` — `enforce`, `audit` и `warn` `privileged`, потому что node-exporter использует hostNetwork, hostPID и hostPort, а Fluentd читает hostPath `/var/log`
 - requests и limits у приложения, Fluentd и значений Helm
 - probes, в том числе долгий startup у backend
 - PodDisruptionBudget у PostgreSQL, Redis, PgBouncer, backend, Celery, notifications, frontend и у Envoy (`minAvailable: 1`)

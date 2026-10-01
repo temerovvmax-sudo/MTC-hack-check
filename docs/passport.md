@@ -22,7 +22,9 @@ MetalLB. Helm 0.16.1, пул из одного адреса, L2Advertisement т�
 
 TestY и TLS. Образы собираются на машине оператора и импортируются в containerd. CA и сертификат лежат в .secrets/tls, в git их нет. Проверка: UI содержит TestY TMS, /healthcheck/ возвращает status ok, HTTP даёт 301.
 
-Наблюдаемость. kube-prometheus-stack и Loki через Helm, Fluentd читает access-лог. Проверка: PromQL up{job="kubelet"} не меньше одного target со значением 1, после curl LogQL находит строку testy-access.
+Наблюдаемость. kube-prometheus-stack и Loki через Helm, Fluentd читает access-лог. Проверка: PromQL up{job="kubelet"} не меньше одного target со значением 1, после curl LogQL через /loki/api/v1/query_range находит строку testy-access.
+
+Безопасность. Пароли создаются при деплое в .secrets (права 0600) и живут в Secret. PostgreSQL читает пароль из файла. TestY, PgBouncer и Grafana читают секрет из окружения: эти образы не умеют файл. Redis без пароля, потому что кэш и channels релиза 2.1.3 не передают его. У каждой нагрузки TestY свой ServiceAccount без токена API. Fluentd может только читать pods и namespaces. testy — Pod Security restricted, envoy-gateway-system и logging — baseline, monitoring и metallb-system — privileged только из-за hostNetwork node-exporter и speaker. NetworkPolicy по умолчанию закрывает testy, monitoring, logging и envoy-gateway-system; открыты DNS, Gateway к приложению, скрейп, Fluentd к Loki и базы. Вход из 192.168.15.0/24 оставлен: Calico режет probes и port-forward. Кластер этими правками не обновлялся.
 
 Без Proxmox. Те же шесть Debian 12 в одной L2-сети и заполненный инвентарь. Ubuntu 24.04 поддерживается тем же плейбуком. Плейбук не вызывает API Proxmox и не хранит токен.
 

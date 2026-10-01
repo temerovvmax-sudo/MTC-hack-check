@@ -184,7 +184,7 @@ ansible-playbook -i ansible/inventory/hosts.ini ansible/deploy.yml
 cat .secrets/lab-credentials.env
 ```
 
-Там пароль PostgreSQL, Django `SECRET_KEY`, пароль суперпользователя TestY (`admin`) и пароль Grafana (`admin`). Файл создаётся при первом деплое, права `0600`.
+Там пароль PostgreSQL, Django `SECRET_KEY`, пароль суперпользователя TestY (`admin`) и пароль Grafana (`admin`). Файл создаётся при первом деплое, права `0600`, в git его нет. Пароли не попадают в ConfigMap и в манифесты: приложение и Grafana читают Secret, PostgreSQL монтирует тот же ключ файлом.
 
 CA для curl и браузера: `.secrets/tls/ca.crt`. В `/etc/hosts` машины, с которой открывают UI:
 
@@ -251,11 +251,18 @@ curl -fsS -G 'http://127.0.0.1:13100/loki/api/v1/query_range' \
   --data-urlencode "end=${end}"
 ```
 
-Fluentd работает от root и не privileged: ему нужно читать hostPath `/var/log`.
+Fluentd работает не от root: uid берётся из образа, дополнительная группа `0` нужна, чтобы читать журналы kubelet `root:root` с правами `0640`. Корень файловой системы только для чтения, позиция tail лежит в emptyDir. Под не privileged.
+
+## Безопасность
+
+Секреты создаются на деплое (`scripts/generate-credentials.py`, каталог `.secrets`, права `0600`) и кладутся в Secret `testy-secrets` и `lab-grafana-admin`. PostgreSQL 14 читает пароль из файла `POSTGRES_PASSWORD_FILE`. TestY 2.1.3, PgBouncer `edoburu/pgbouncer:1.22.1-p0` и Grafana 13.2.3 оставляют пароль в окружении: образ берёт `SECRET_KEY`, `POSTGRES_PASSWORD`, `SUPERUSER_PASSWORD`, URL Celery и `DB_PASSWORD` только из переменных, а Grafana 13.2.3 не читает `GF_SECURITY_ADMIN_PASSWORD` из файла. Redis без пароля. Кэш и channels этого релиза собирают `redis://REDIS_HOST:REDIS_PORT` и не умеют передать пароль; `requirepass` оборвал бы их. У backend, Celery, notifications, frontend, PostgreSQL, Redis и PgBouncer свой ServiceAccount, `automountServiceAccountToken: false`. Fluentd монтирует токен и в ClusterRole имеет только `get`, `list`, `watch` на `pods` и `namespaces`. Prometheus, оператор и Grafana используют роли chart kube-prometheus-stack: обнаружение целей и чтение ConfigMap дашбордов. Контроллер Envoy Gateway ходит в API своим токеном; у data plane корень ФС не read-only, потому что Envoy пишет UDS, и Envoy Gateway 1.9 сам оставляет `readOnlyRootFilesystem` пустым. Остальные поля data plane — non-root uid 65532, drop `ALL`, seccomp `RuntimeDefault`.
+
+`testy` — Pod Security `restricted`: процессы уже non-root, probes и entrypoint этого не ломают. `envoy-gateway-system` — `baseline`: chart сам запускает контроллер non-root с read-only корнем, а listener 80/443 внутри контейнера сдвинут на 10080/10443. `logging` — `baseline`: Fluentd нужен только hostPath `/var/log`, не hostNetwork. `monitoring` и `metallb-system` остаются `privileged`, потому что node-exporter использует hostNetwork, hostPID и hostPort 9100, а speaker MetalLB — hostNetwork. Init-контейнер Grafana от root выключен: том данных получает fsGroup 472.
+
+В `testy`, `monitoring`, `logging` и `envoy-gateway-system` NetworkPolicy сначала запрещает весь вход и выход. Дальше явно разрешены DNS, Gateway к портам 8080 приложения, скрейп Prometheus (kubelet 10250, node-exporter 9100, kube-system и Loki 3100), Fluentd к API и к Loki, PgBouncer к PostgreSQL, приложение к PgBouncer и Redis. Клиенты снаружи попадают только на порты data plane 10080, 10443, 80 и 443. Отдельное правило пускает вход из подсети узлов `192.168.15.0/24`: Calico применяет политику и к probes kubelet, и к `kubectl port-forward`, без этого `make verify` не дойдёт до Prometheus и Loki.
 
 ## Дополнительно
 
-- namespaces `testy` и `envoy-gateway-system` — Pod Security `baseline`; `monitoring`, `logging` и `metallb-system` — `enforce`, `audit` и `warn` `privileged`, потому что node-exporter и speaker MetalLB используют hostNetwork, а Fluentd читает hostPath `/var/log`
 - requests и limits у приложения, Fluentd и значений Helm
 - probes, в том числе долгий startup у backend
 - PodDisruptionBudget у PostgreSQL, Redis, PgBouncer, backend, Celery, notifications, frontend и у Envoy (`minAvailable: 1`)

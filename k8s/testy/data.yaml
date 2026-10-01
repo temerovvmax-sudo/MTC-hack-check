@@ -79,6 +79,8 @@ spec:
         app.kubernetes.io/name: testy-postgres
         app.kubernetes.io/part-of: testy-lab
     spec:
+      serviceAccountName: testy-postgres
+      automountServiceAccountToken: false
       nodeSelector:
         testy.yadro.dev/pool: app
       securityContext:
@@ -105,11 +107,8 @@ spec:
               value: testy
             - name: POSTGRES_DB
               value: testy
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: testy-secrets
-                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_PASSWORD_FILE
+              value: /secrets/postgres/POSTGRES_PASSWORD
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
           volumeMounts:
@@ -117,6 +116,13 @@ spec:
               mountPath: /var/lib/postgresql/data
             - name: dshm
               mountPath: /dev/shm
+            - name: postgres-password
+              mountPath: /secrets/postgres
+              readOnly: true
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "testy", "-d", "testy"]
@@ -136,6 +142,10 @@ spec:
               memory: 768Mi
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
             capabilities:
               drop: ["ALL"]
       volumes:
@@ -146,6 +156,17 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 256Mi
+        - name: postgres-password
+          secret:
+            secretName: testy-secrets
+            defaultMode: 0444
+            items:
+              - key: POSTGRES_PASSWORD
+                path: POSTGRES_PASSWORD
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -189,6 +210,8 @@ spec:
         app.kubernetes.io/name: testy-redis
         app.kubernetes.io/part-of: testy-lab
     spec:
+      serviceAccountName: testy-redis
+      automountServiceAccountToken: false
       nodeSelector:
         testy.yadro.dev/pool: app
       securityContext:
@@ -209,6 +232,8 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: tmp
+              mountPath: /tmp
           readinessProbe:
             exec:
               command: ["redis-cli", "ping"]
@@ -228,12 +253,18 @@ spec:
               memory: 192Mi
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
             capabilities:
               drop: ["ALL"]
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: testy-redis
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -277,9 +308,12 @@ spec:
         app.kubernetes.io/name: testy-pgbouncer
         app.kubernetes.io/part-of: testy-lab
     spec:
+      serviceAccountName: testy-pgbouncer
+      automountServiceAccountToken: false
       nodeSelector:
         testy.yadro.dev/pool: app
       securityContext:
+        fsGroup: 70
         runAsUser: 70
         runAsGroup: 70
         runAsNonRoot: true
@@ -312,6 +346,15 @@ spec:
               value: testy
             - name: MAX_CLIENT_CONN
               value: "200"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/pgbouncer
+            - name: log
+              mountPath: /var/log/pgbouncer
+            - name: run
+              mountPath: /var/run/pgbouncer
+            - name: tmp
+              mountPath: /tmp
           readinessProbe:
             tcpSocket:
               port: pgbouncer
@@ -331,8 +374,21 @@ spec:
               memory: 128Mi
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
             capabilities:
               drop: ["ALL"]
+      volumes:
+        - name: config
+          emptyDir: {}
+        - name: log
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

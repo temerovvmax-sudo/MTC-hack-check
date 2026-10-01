@@ -5,6 +5,12 @@
     kubectl apply -f {{ repo_root }}/k8s/namespaces.yaml
   changed_when: true
 
+- name: Apply default-deny network policies
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl apply -f {{ repo_root }}/k8s/network/policies.yaml
+  changed_when: true
+
 - name: Load credentials
   ansible.builtin.include_vars:
     file: "{{ lab_credentials_json }}"
@@ -84,6 +90,7 @@
     {{ repo_root }}/scripts/with-lab-kubeconfig.sh
     kubectl apply -f {{ item }}
   loop:
+    - "{{ repo_root }}/k8s/testy/rbac.yaml"
     - "{{ lab_cache }}/rendered-lab/data.yaml"
     - "{{ repo_root }}/k8s/testy/app.yaml"
     - "{{ lab_cache }}/rendered-lab/gateway.yaml"
@@ -119,13 +126,13 @@
     --wait --timeout 40m
   changed_when: true
 
-- name: Allow Fluentd hostPath in the logging namespace
+- name: Keep logging at baseline for the Fluentd hostPath
   ansible.builtin.command: >-
     {{ repo_root }}/scripts/with-lab-kubeconfig.sh
     kubectl label namespace logging
-    pod-security.kubernetes.io/enforce=privileged
-    pod-security.kubernetes.io/audit=privileged
-    pod-security.kubernetes.io/warn=privileged
+    pod-security.kubernetes.io/enforce=baseline
+    pod-security.kubernetes.io/audit=baseline
+    pod-security.kubernetes.io/warn=baseline
     --overwrite
   changed_when: true
 

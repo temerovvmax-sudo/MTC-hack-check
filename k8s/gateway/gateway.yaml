@@ -29,6 +29,12 @@ spec:
         pod:
           nodeSelector:
             testy.yadro.dev/pool: gateway
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
           tolerations:
             - key: testy.yadro.dev/pool
               operator: Equal
@@ -44,6 +50,15 @@ spec:
                         app.kubernetes.io/name: envoy
                     topologyKey: kubernetes.io/hostname
         container:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
           resources:
             requests:
               cpu: 50m

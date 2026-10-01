@@ -75,6 +75,7 @@ kubeconform -summary -strict \
   "${ROOT}/k8s/smoke/gateway.yaml" \
   "${ROOT}/k8s/smoke/observability.yaml" \
   "${ROOT}/k8s/logging" \
+  "${ROOT}/k8s/network" \
   "${ROOT}/k8s/monitoring/dashboards.yaml" \
   "${ROOT}/k8s/metallb/pool.yaml" \
   "${RENDER}"

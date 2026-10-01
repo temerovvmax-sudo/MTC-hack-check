@@ -13,6 +13,8 @@ alertmanager:
         cpu: 200m
         memory: 192Mi
 grafana:
+  initChownData:
+    enabled: false
   image:
     tag: "13.2.3"
   admin:

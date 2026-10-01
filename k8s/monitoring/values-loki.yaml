@@ -2,6 +2,9 @@
 deploymentMode: SingleBinary
 loki:
   auth_enabled: false
+  podSecurityContext:
+    seccompProfile:
+      type: RuntimeDefault
   commonConfig:
     replication_factor: 1
     path_prefix: /var/loki

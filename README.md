@@ -1,31 +1,62 @@
 # Лаборатория TestY в Kubernetes
+[[_TOC_]]
 
-Воспроизводимый стенд TestY TMS 2.1.3 (YADRO) на шести виртуальных машинах Debian 12. Тот же плейбук поддерживает Ubuntu 24.04: ветка выбирается по `ansible_distribution`. Кластер собирает kubeadm. Снаружи нет облачного балансировщика: MetalLB в режиме L2 отдаёт один VIP, и на него смотрит Service Envoy Gateway. Приложение, PostgreSQL, Redis, Celery и воркер уведомлений работают на трёх worker-узлах. Data plane Envoy стоит только на двух gateway-узлах. Метрики собирает kube-prometheus-stack, access-логи Fluentd отправляет в Loki, Grafana показывает и то и другое.
+Воспроизводимый стенд TestY TMS 2.1.3 (YADRO) на шести виртуальных машинах Debian 12. Тот же плейбук поддерживает Ubuntu 24.04: ветка выбирается по `ansible_distribution`. Кластер собирает kubeadm. Снаружи нет облачного балансировщика: MetalLB в режиме L2 отдаёт один VIP, и на него смотрит Service Envoy Gateway.
 
-Плейбук ставит кластер на шесть уже созданных ВМ. Файл `~/.kube/config` не читается и не пишется. Kubeconfig лаборатории — `.kube/lab.config`, каталог в `.gitignore`.
+## Уровень реализации
 
-Образы TestY собираются на машине оператора из публичного тега `release/2.1.3` (`3544c0f34640443c499fde2f9a52be30c863c519`). Приватные реестры не используются. Секреты создаются при деплое и в git не попадают. Токенов API Proxmox в репозитории нет.
+- [x] kubeadm: 1 control-plane, 3 workers, 2 gateway
+- [x] Calico, kube-proxy в режиме iptables
+- [x] MetalLB L2, один VIP
+- [x] Envoy Gateway, HTTPRoute, TLS
+- [x] TestY 2.1.3: frontend, backend, PostgreSQL, PgBouncer, Redis, Celery, notifications
+- [x] local-path provisioner
+- [x] kube-prometheus-stack и Grafana
+- [x] Fluentd в Loki
+- [x] NetworkPolicy и Pod Security
+- [x] requests, limits, probes, PodDisruptionBudget
+- [x] Секреты создаются при деплое и в git не попадают
+- [x] `make verify`
+- [x] CI: `make lint`
+- [ ] ResourceQuota (на этих шести узлах стенд хрупкий)
+- [ ] SMTP
+- [ ] Больше одной реплики backend (миграции выполняются в entrypoint)
 
-## Архитектура
+## Схема реализации
 
-```text
-браузер или curl
-        |  HTTPS, VIP MetalLB, testy.local и api.testy.local
-        v
-Envoy Gateway, 2 реплики, узлы pool=gateway
-        |  HTTPRoute testy-ui          HTTPRoute testy-api
-        v                              v
-frontend (nginx, статика SPA)         sidecar access-log -> gunicorn TestY
-                                          |            |
-                                          v            v
-                                     PostgreSQL    Redis
-                                     через PgBouncer
-                                     Celery worker + beat
-                                     notification worker
+```mermaid
+graph TB
+  client["браузер или curl"]
+  envoy["Envoy Gateway, 2 реплики, pool=gateway"]
+  ui["HTTPRoute testy-ui"]
+  api["HTTPRoute testy-api"]
+  frontend["frontend, nginx, статика SPA"]
+  backend["backend, sidecar access-log, gunicorn TestY"]
+  pgbouncer["PgBouncer"]
+  postgres["PostgreSQL"]
+  redis["Redis"]
+  celery["Celery worker и beat"]
+  notify["notification worker"]
+  fluentd["Fluentd DaemonSet"]
+  loki["Loki"]
+  prom["kube-prometheus-stack"]
+  grafana["Grafana"]
 
-Fluentd DaemonSet читает access-лог sidecar и stdout gunicorn/Envoy
-        -> Loki -> Grafana
-kube-prometheus-stack -> Grafana
+  client -->|"HTTPS, VIP MetalLB, testy.local и api.testy.local"| envoy
+  envoy --> ui
+  envoy --> api
+  ui --> frontend
+  api --> backend
+  backend --> pgbouncer
+  pgbouncer --> postgres
+  backend --> redis
+  backend --> celery
+  backend --> notify
+  backend -.-> fluentd
+  envoy -.-> fluentd
+  fluentd --> loki
+  loki --> grafana
+  prom --> grafana
 ```
 
 Узлы kubeadm:
@@ -39,6 +70,180 @@ kube-prometheus-stack -> Grafana
 Поды приложения и наблюдаемости не имеют toleration на gateway-taint, поэтому планировщик ставит их на workers. Data plane Envoy имеет и nodeSelector, и toleration, поэтому стоит только на gateway-узлах. Контроллер Envoy Gateway остаётся на workers. Calico, speaker MetalLB, Fluentd и node-exporter — DaemonSet, у них есть toleration, они есть и на gateway.
 
 CNI — Calico, pod CIDR `192.168.0.0/16`. kube-proxy в режиме iptables: в Kubernetes 1.37 режим IPVS объявлен устаревшим. Диски подов — local-path provisioner, StorageClass по умолчанию.
+
+## Схема деплоя
+
+```mermaid
+graph TB
+  inventory["Проверка инвентаря"] --> operator["Сборка образов на машине оператора"]
+  operator --> prep["Подготовка узлов Debian 12 или Ubuntu 24.04"]
+  prep --> images["Импорт образов в containerd"]
+  images --> init["kubeadm init"]
+  init --> calico["Calico"]
+  calico --> join["kubeadm join, workers и gateway"]
+  join --> platform["Метки узлов и MetalLB"]
+  platform --> work["TestY, Gateway, наблюдаемость"]
+```
+
+Плейбук ставит кластер на шесть уже созданных ВМ. Файл `~/.kube/config` не читается и не пишется. Kubeconfig лаборатории — `.kube/lab.config`, каталог в `.gitignore`.
+
+Образы TestY собираются на машине оператора из публичного тега `release/2.1.3` (`3544c0f34640443c499fde2f9a52be30c863c519`). Приватные реестры не используются. Токенов API Proxmox в репозитории нет.
+
+## Настройка проекта
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ansible make git
+git clone <url-репозитория> testy-lab
+cd testy-lab
+make deploy
+```
+
+Эквивалент без Make:
+
+```bash
+export KUBECONFIG="$PWD/.kube/lab.config"
+ansible-playbook -i ansible/inventory/hosts.ini ansible/deploy.yml
+```
+
+Файл лаборатории — `ansible/inventory/hosts.ini`. Рядом `hosts.example.ini` с теми же именами и адресами. `make deploy` выставляет `KUBECONFIG` на `.kube/lab.config`. Повторный запуск идемпотентен: пакеты удерживаются `apt-mark hold`, `kubeadm init` и `kubeadm join` пропускаются, если узел уже в кластере, образы не пересобираются при том же коммите и имени API, `helm upgrade --install` и `kubectl apply` не удаляют PVC, пароли и CA берутся из уже созданных файлов.
+
+Нужные переменные в инвентаре
+
+| Переменная | Где | Описание | Дополнение / умолчание |
+| --- | --- | --- | --- |
+| `ansible_user` | `[all:vars]` | SSH-пользователь на узлах | `m.temerov` |
+| `ansible_host` | хост в группе | Адрес узла | `192.168.15.120`–`192.168.15.125` |
+| `metallb_vip` | `[all:vars]` | VIP MetalLB (обязательное) | `192.168.15.126` |
+| `ui_host` | `[all:vars]` | Имя UI | `testy.local` |
+| `api_host` | `[all:vars]` | Имя API | `api.testy.local` |
+| `ansible_python_interpreter` | `[all:vars]` | Интерпретатор на узле | `/usr/bin/python3` |
+
+`ansible_ssh_private_key_file` не задан. OpenSSH сам берёт ключ по умолчанию: агент, затем `~/.ssh/id_ed25519` или `~/.ssh/id_rsa`. Путь к приватному ключу в git не записывают. Имя узла kubeadm — это имя в инвентаре (`k8s-testy-cp` и остальные).
+
+| Имя в инвентаре | Группа | `ansible_host` |
+| --- | --- | --- |
+| `k8s-testy-cp` | `control_plane` | `192.168.15.120` |
+| `k8s-testy-w1` | `workers` | `192.168.15.121` |
+| `k8s-testy-w2` | `workers` | `192.168.15.122` |
+| `k8s-testy-w3` | `workers` | `192.168.15.123` |
+| `k8s-testy-gw1` | `gateways` | `192.168.15.124` |
+| `k8s-testy-gw2` | `gateways` | `192.168.15.125` |
+
+Команду `make deploy` запускают с отдельной машины Debian 12, Ubuntu 24.04 или macOS, с которой есть SSH на все шесть. Это не седьмой узел. На Debian и Ubuntu плейбук ставит пакеты через apt, в том числе Docker, и скачивает Helm и kubectl. На macOS apt-get не вызывается: `docker`, `helm` и `kubectl` уже должны быть в PATH, иначе плейбук останавливается и называет недостающую программу. С машины оператора нужен исходящий HTTPS к GitLab YADRO, Docker Hub, Quay, GitHub, `pkgs.k8s.io` и репозиториям Helm.
+
+В `/etc/hosts` машины, с которой открывают UI:
+
+```text
+192.168.15.126 testy.local api.testy.local
+```
+
+Адрес — это `metallb_vip`, не адрес узла.
+
+Учётные данные лаборатории:
+
+```bash
+cat .secrets/lab-credentials.env
+```
+
+Там пароль PostgreSQL, Django `SECRET_KEY`, пароль суперпользователя TestY (`admin`) и пароль Grafana (`admin`). Файл создаётся при первом деплое, права `0600`, в git его нет. Пароли не попадают в ConfigMap и в манифесты: приложение и Grafana читают Secret, PostgreSQL монтирует тот же ключ файлом. CA для curl и браузера: `.secrets/tls/ca.crt`.
+
+## Стадии
+
+Плей `ansible/deploy.yml`:
+
+- Проверка инвентаря
+- Машина оператора и сборка образов
+- Подготовка узлов Debian 12 или Ubuntu 24.04
+- Импорт образов в containerd
+- `kubeadm init` на control-plane
+- Calico
+- `kubeadm join` workers и gateway
+- Метки узлов и MetalLB
+- TestY, Gateway и наблюдаемость
+
+Проверка после деплоя:
+
+```bash
+make verify
+```
+
+`scripts/verify-cluster.sh` ходит на VIP Gateway по TLS, порт 443. Проверки по порядку: HTML UI с `TestY TMS`, тело API `{"status": "ok"}`, редирект HTTP 301, один target Prometheus запросом `up{job="kubelet"}` со значением не меньше 1, строка access-лога в Loki после curl. Kubeconfig тот же `.kube/lab.config`.
+
+<details><summary>Проверка вручную</summary>
+
+```bash
+export KUBECONFIG="$PWD/.kube/lab.config"
+curl --fail --cacert .secrets/tls/ca.crt \
+  --resolve "testy.local:443:192.168.15.126" \
+  "https://testy.local/"
+curl --fail --cacert .secrets/tls/ca.crt \
+  --resolve "api.testy.local:443:192.168.15.126" \
+  "https://api.testy.local/healthcheck/?probe=labmanual"
+```
+
+> NOTE:
+> Подставьте свой VIP вместо `192.168.15.126`.
+
+</details>
+
+## Виртуальные машины в Proxmox
+
+Плейбук не создаёт ВМ и не ходит в API Proxmox. Ниже план этих машин. Все шесть висят на одном мосту `vmbr0`, подсеть `192.168.15.0/24`, шлюз `192.168.15.1`.
+
+| Имя | Роль | vCPU | RAM | Диск | IP |
+| --- | --- | --- | --- | --- | --- |
+| k8s-testy-cp | control-plane | 2 | 4 ГиБ | 40 ГиБ | 192.168.15.120 |
+| k8s-testy-w1 | worker | 4 | 8 ГиБ | 80 ГиБ | 192.168.15.121 |
+| k8s-testy-w2 | worker | 4 | 8 ГиБ | 80 ГиБ | 192.168.15.122 |
+| k8s-testy-w3 | worker | 4 | 8 ГиБ | 80 ГиБ | 192.168.15.123 |
+| k8s-testy-gw1 | gateway | 2 | 4 ГиБ | 40 ГиБ | 192.168.15.124 |
+| k8s-testy-gw2 | gateway | 2 | 4 ГиБ | 40 ГиБ | 192.168.15.125 |
+| VIP MetalLB | не интерфейс ВМ |  |  |  | 192.168.15.126 |
+
+Образ — Debian 12. Пользователь — `m.temerov`. Имена и адреса — `k8s-testy-cp` … `k8s-testy-gw2` и VIP `192.168.15.120`–`192.168.15.126` из таблицы. У каждой ВМ свой статический IPv4 на `vmbr0`, диск virtio, включённый в параметрах ВМ QEMU Guest Agent. Имя ВМ и hostname гостя совпадают с именем в инвентаре: kubeadm называет узел этим именем.
+
+Cloud-init в интерфейсе Proxmox: пользователь `m.temerov`, публичный SSH-ключ, DNS, адрес и шлюз из таблицы. Дополнительный сниппет, без токена API:
+
+<details><summary>cloud-init</summary>
+
+```yaml
+#cloud-config
+hostname: k8s-testy-cp
+manage_etc_hosts: true
+users:
+  - name: m.temerov
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAA_ПУБЛИЧНЫЙ_КЛЮЧ lab
+packages:
+  - qemu-guest-agent
+  - chrony
+runcmd:
+  - systemctl enable --now qemu-guest-agent
+  - systemctl enable --now chrony
+  - swapoff -a
+  - sed -i '/[[:space:]]swap[[:space:]]/ s/^/#/' /etc/fstab
+```
+
+> NOTE:
+> Для остальных пяти машин меняют только `hostname`. Плейбук всё равно выставляет hostname из инвентаря, гасит swap, ставит и запускает chrony и qemu-guest-agent.
+
+</details>
+
+Адрес `192.168.15.126` не добавляют ни на один интерфейс и не отдают по DHCP. MetalLB отвечает на ARP за него с узлов gateway. Это и есть запасной IP под VIP.
+
+## Без Proxmox
+
+Достаточно любых шести машин Debian 12 в одной L2-сети: статические адреса, общий SSH-ключ, sudo без пароля, swap выключен. Те же шаги подходят для Ubuntu 24.04. Имена и адреса записывают в инвентарь. Мост, cloud-init и гостевой агент нужны только если машины живут в Proxmox.
+
+`make smoke` не является путём стенда. Это один узел minikube на той же машине, где мало памяти, профиль `testy-smoke`, kubeconfig `.kube/smoke.config`. Шесть узлов он не создаёт и kubeconfig экспертного стенда не перезаписывает. В нём нет Celery, notification worker, PgBouncer, Grafana и kube-prometheus-stack. Экспертам он не нужен.
+
+```bash
+make smoke
+```
 
 ## Технологии и версии
 
@@ -75,72 +280,6 @@ CNI — Calico, pod CIDR `192.168.0.0/16`. kube-proxy в режиме iptables: 
 
 Стек TestY совпадает с `docker-compose.yml` релиза: backend (gunicorn + uvicorn), frontend, PostgreSQL, PgBouncer, Redis, Celery (`worker -B`) и `runworker notifications`.
 
-## Виртуальные машины в Proxmox
-
-Плейбук не создаёт ВМ и не ходит в API Proxmox. Ниже план этих машин. Все шесть висят на одном мосту `vmbr0`, подсеть `192.168.15.0/24`, шлюз `192.168.15.1`.
-
-| Имя | Роль | vCPU | RAM | Диск | IP |
-| --- | --- | --- | --- | --- | --- |
-| k8s-testy-cp | control-plane | 2 | 4 ГиБ | 40 ГиБ | 192.168.15.120 |
-| k8s-testy-w1 | worker | 4 | 8 ГиБ | 80 ГиБ | 192.168.15.121 |
-| k8s-testy-w2 | worker | 4 | 8 ГиБ | 80 ГиБ | 192.168.15.122 |
-| k8s-testy-w3 | worker | 4 | 8 ГиБ | 80 ГиБ | 192.168.15.123 |
-| k8s-testy-gw1 | gateway | 2 | 4 ГиБ | 40 ГиБ | 192.168.15.124 |
-| k8s-testy-gw2 | gateway | 2 | 4 ГиБ | 40 ГиБ | 192.168.15.125 |
-| VIP MetalLB | не интерфейс ВМ |  |  |  | 192.168.15.126 |
-
-Образ — Debian 12. Пользователь — `m.temerov`. Имена и адреса — `k8s-testy-cp` … `k8s-testy-gw2` и VIP `192.168.15.120`–`192.168.15.126` из таблицы. У каждой ВМ свой статический IPv4 на `vmbr0`, диск virtio, включённый в параметрах ВМ QEMU Guest Agent. Имя ВМ и hostname гостя совпадают с именем в инвентаре: kubeadm называет узел этим именем.
-
-Cloud-init в интерфейсе Proxmox: пользователь `m.temerov`, публичный SSH-ключ, DNS, адрес и шлюз из таблицы. Дополнительный сниппет, без токена API:
-
-```yaml
-#cloud-config
-hostname: k8s-testy-cp
-manage_etc_hosts: true
-users:
-  - name: m.temerov
-    groups: [sudo]
-    shell: /bin/bash
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    ssh_authorized_keys:
-      - ssh-ed25519 AAAA_ПУБЛИЧНЫЙ_КЛЮЧ lab
-packages:
-  - qemu-guest-agent
-  - chrony
-runcmd:
-  - systemctl enable --now qemu-guest-agent
-  - systemctl enable --now chrony
-  - swapoff -a
-  - sed -i '/[[:space:]]swap[[:space:]]/ s/^/#/' /etc/fstab
-```
-
-Для остальных пяти машин меняют только `hostname`. Плейбук всё равно выставляет hostname из инвентаря, гасит swap, ставит и запускает chrony и qemu-guest-agent.
-
-Адрес `192.168.15.126` не добавляют ни на один интерфейс и не отдают по DHCP. MetalLB отвечает на ARP за него с узлов gateway. Это и есть запасной IP под VIP.
-
-## Без Proxmox
-
-Достаточно любых шести машин Debian 12 в одной L2-сети: статические адреса, общий SSH-ключ, sudo без пароля, swap выключен. Те же шаги подходят для Ubuntu 24.04. Имена и адреса записывают в инвентарь. Мост, cloud-init и гостевой агент нужны только если машины живут в Proxmox.
-
-Команду `make deploy` запускают с отдельной машины Debian 12, Ubuntu 24.04 или macOS, с которой есть SSH на все шесть. Это не седьмой узел. На Debian и Ubuntu плейбук ставит пакеты через apt, в том числе Docker, и скачивает Helm и kubectl. На macOS apt-get не вызывается: `docker`, `helm` и `kubectl` уже должны быть в PATH, иначе плейбук останавливается и называет недостающую программу. С машины оператора нужен исходящий HTTPS к GitLab YADRO, Docker Hub, Quay, GitHub, `pkgs.k8s.io` и репозиториям Helm.
-
-## Инвентарь
-
-Файл лаборатории — `ansible/inventory/hosts.ini`. Рядом `hosts.example.ini` с теми же именами и адресами.
-
-| Имя в инвентаре | Группа | `ansible_host` |
-| --- | --- | --- |
-| `k8s-testy-cp` | `control_plane` | `192.168.15.120` |
-| `k8s-testy-w1` | `workers` | `192.168.15.121` |
-| `k8s-testy-w2` | `workers` | `192.168.15.122` |
-| `k8s-testy-w3` | `workers` | `192.168.15.123` |
-| `k8s-testy-gw1` | `gateways` | `192.168.15.124` |
-| `k8s-testy-gw2` | `gateways` | `192.168.15.125` |
-
-`ansible_user` — `m.temerov`. `metallb_vip` — `192.168.15.126`. `ui_host` — `testy.local`, `api_host` — `api.testy.local`.
-
-`ansible_ssh_private_key_file` не задан. OpenSSH сам берёт ключ по умолчанию: агент, затем `~/.ssh/id_ed25519` или `~/.ssh/id_rsa`. Путь к приватному ключу в git не записывают. Имя узла kubeadm — это имя в инвентаре (`k8s-testy-cp` и остальные).
-
 ## Gateway API и MetalLB
 
 Реализация: **Envoy Gateway v1.9.2**.
@@ -154,61 +293,6 @@ runcmd:
 Плейбук подставляет аннотацию `metallb.universe.tf/loadBalancerIPs` из `metallb_vip`. Поле `loadBalancerIP` не задаётся: MetalLB 0.16 не принимает его вместе с этой аннотацией. Пул MetalLB — этот адрес с маской `/32`. L2Advertisement ограничен узлами с меткой gateway. Speaker MetalLB терпит taint gateway, контроллер сидит на workers.
 
 TLS терминируется на Gateway. CA и сертификат с SAN обоих имён создаёт `scripts/generate-tls.sh` в `.secrets/tls/`. Повторный деплой сертификат не перевыпускает, пока имена не изменились.
-
-## Деплой
-
-```bash
-sudo apt-get update
-sudo apt-get install -y ansible make git
-git clone <url-репозитория> testy-lab
-cd testy-lab
-make deploy
-```
-
-Эквивалент без Make:
-
-```bash
-export KUBECONFIG="$PWD/.kube/lab.config"
-ansible-playbook -i ansible/inventory/hosts.ini ansible/deploy.yml
-```
-
-`make deploy` выставляет `KUBECONFIG` на `.kube/lab.config`. Повторный запуск идемпотентен: пакеты удерживаются `apt-mark hold`, `kubeadm init` и `kubeadm join` пропускаются, если узел уже в кластере, образы не пересобираются при том же коммите и имени API, `helm upgrade --install` и `kubectl apply` не удаляют PVC, пароли и CA берутся из уже созданных файлов.
-
-Учётные данные лаборатории:
-
-```bash
-cat .secrets/lab-credentials.env
-```
-
-Там пароль PostgreSQL, Django `SECRET_KEY`, пароль суперпользователя TestY (`admin`) и пароль Grafana (`admin`). Файл создаётся при первом деплое, права `0600`, в git его нет. Пароли не попадают в ConfigMap и в манифесты: приложение и Grafana читают Secret, PostgreSQL монтирует тот же ключ файлом.
-
-CA для curl и браузера: `.secrets/tls/ca.crt`. В `/etc/hosts` машины, с которой открывают UI:
-
-```text
-192.168.15.126 testy.local api.testy.local
-```
-
-Адрес — это `metallb_vip`, не адрес узла.
-
-## Проверка
-
-```bash
-make verify
-```
-
-`scripts/verify-cluster.sh` ходит на VIP Gateway по TLS, порт 443. Проверки по порядку: HTML UI с `TestY TMS`, тело API `{"status": "ok"}`, редирект HTTP 301, один target Prometheus запросом `up{job="kubelet"}` со значением не меньше 1, строка access-лога в Loki после curl. Kubeconfig тот же `.kube/lab.config`.
-
-Вручную, подставив свой VIP:
-
-```bash
-export KUBECONFIG="$PWD/.kube/lab.config"
-curl --fail --cacert .secrets/tls/ca.crt \
-  --resolve "testy.local:443:192.168.15.126" \
-  "https://testy.local/"
-curl --fail --cacert .secrets/tls/ca.crt \
-  --resolve "api.testy.local:443:192.168.15.126" \
-  "https://api.testy.local/healthcheck/?probe=labmanual"
-```
 
 ## Prometheus
 
@@ -263,16 +347,6 @@ Fluentd работает не от root: uid `999` и gid `999` из образ�
 - probes, в том числе долгий startup у backend
 - PodDisruptionBudget у PostgreSQL, Redis, PgBouncer, backend, Celery, notifications, frontend и у Envoy (`minAvailable: 1`)
 - CI: `.github/workflows/manifests.yml` запускает `make lint`
-
-ResourceQuota нет: на этих шести узлах она делает стенд хрупким.
-
-## Необязательная локальная проверка
-
-`make smoke` не является путём стенда. Это один узел minikube на той же машине, где мало памяти, профиль `testy-smoke`, kubeconfig `.kube/smoke.config`. Шесть узлов он не создаёт и kubeconfig экспертного стенда не перезаписывает. В нём нет Celery, notification worker, PgBouncer, Grafana и kube-prometheus-stack. Экспертам он не нужен.
-
-```bash
-make smoke
-```
 
 ## Ограничения
 

@@ -1,5 +1,4 @@
 # TestY в Kubernetes
-[[_TOC_]]
 
 Воспроизводимый стенд TestY TMS 2.1.3 (YADRO) на шести виртуальных машинах Debian 12. Тот же плейбук поддерживает Ubuntu 24.04: ветка выбирается по `ansible_distribution`. Кластер собирает kubeadm. Снаружи нет облачного балансировщика: MetalLB в режиме L2 отдаёт один VIP, и на него смотрит Service Envoy Gateway.
 

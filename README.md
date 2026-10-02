@@ -1,4 +1,4 @@
-# Лаборатория TestY в Kubernetes
+#TestY в Kubernetes
 
 Воспроизводимый стенд TestY TMS 2.1.3 (YADRO) на шести виртуальных машинах Debian 12. Тот же плейбук поддерживает Ubuntu 24.04: ветка выбирается по `ansible_distribution`. Кластер собирает kubeadm. Снаружи нет облачного балансировщика: MetalLB в режиме L2 отдаёт один VIP, и на него смотрит Service Envoy Gateway. Приложение, PostgreSQL, Redis, Celery и воркер уведомлений работают на трёх worker-узлах. Data plane Envoy стоит только на двух gateway-узлах. Метрики собирает kube-prometheus-stack, access-логи Fluentd отправляет в Loki, Grafana показывает и то и другое.
 

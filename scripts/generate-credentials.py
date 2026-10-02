@@ -45,7 +45,7 @@ def main() -> None:
         "GRAFANA_ADMIN_PASSWORD": complex_password(),
     }
     lines = [
-        "# Local lab credentials generated at deploy time.",
+        "# Local lab credentials created at deploy time.",
         "# These are not production secrets and are not committed.",
         "# TestY superuser password has upper, lower, digit, and a special character.",
     ]

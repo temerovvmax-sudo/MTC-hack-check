@@ -219,7 +219,7 @@ metadata:
   name: testy-backend
   namespace: testy
 spec:
-  maxUnavailable: 1
+  minAvailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: testy-backend
@@ -362,7 +362,7 @@ metadata:
   name: testy-celery
   namespace: testy
 spec:
-  maxUnavailable: 1
+  minAvailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: testy-celery
@@ -487,7 +487,7 @@ metadata:
   name: testy-notifications
   namespace: testy
 spec:
-  maxUnavailable: 1
+  minAvailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: testy-notifications
@@ -588,7 +588,7 @@ metadata:
   name: testy-frontend
   namespace: testy
 spec:
-  maxUnavailable: 1
+  minAvailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: testy-frontend

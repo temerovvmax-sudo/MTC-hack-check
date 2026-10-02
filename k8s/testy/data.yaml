@@ -78,8 +78,24 @@ spec:
       labels:
         app.kubernetes.io/name: testy-postgres
         app.kubernetes.io/part-of: testy-lab
+        testy.yadro.dev/workload: postgres
     spec:
       serviceAccountName: testy-postgres
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  testy.yadro.dev/workload: prometheus
+              namespaces:
+                - monitoring
+              topologyKey: kubernetes.io/hostname
+            - labelSelector:
+                matchLabels:
+                  testy.yadro.dev/workload: loki
+              namespaces:
+                - logging
+              topologyKey: kubernetes.io/hostname
       automountServiceAccountToken: false
       nodeSelector:
         testy.yadro.dev/pool: app
@@ -187,7 +203,7 @@ metadata:
   name: testy-postgres
   namespace: testy
 spec:
-  maxUnavailable: 1
+  minAvailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: testy-postgres
@@ -201,6 +217,8 @@ metadata:
     app.kubernetes.io/name: testy-redis
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: testy-redis
@@ -285,7 +303,7 @@ metadata:
   name: testy-redis
   namespace: testy
 spec:
-  maxUnavailable: 1
+  minAvailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: testy-redis
@@ -409,7 +427,7 @@ metadata:
   name: testy-pgbouncer
   namespace: testy
 spec:
-  maxUnavailable: 1
+  minAvailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: testy-pgbouncer

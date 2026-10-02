@@ -69,7 +69,7 @@ graph TB
 
 Поды приложения и наблюдаемости не имеют toleration на gateway-taint, поэтому планировщик ставит их на workers. Data plane Envoy имеет и nodeSelector, и toleration, поэтому стоит только на gateway-узлах. Контроллер Envoy Gateway остаётся на workers. Calico, speaker MetalLB, Fluentd и node-exporter — DaemonSet, у них есть toleration, они есть и на gateway.
 
-CNI — Calico, pod CIDR `192.168.0.0/16`. kube-proxy в режиме iptables: в Kubernetes 1.37 режим IPVS объявлен устаревшим. Диски подов — local-path provisioner, StorageClass по умолчанию.
+CNI — Calico, pod CIDR `10.244.0.0/16`. Он не пересекается с подсетью узлов. kube-proxy в режиме iptables: в Kubernetes 1.37 режим IPVS объявлен устаревшим. Диски подов — local-path provisioner, StorageClass по умолчанию.
 
 ## Схема деплоя
 
@@ -115,11 +115,12 @@ ansible-playbook -i ansible/inventory/hosts.ini ansible/deploy.yml
 | `ansible_user` | `[all:vars]` | SSH-пользователь на узлах | `m.temerov` |
 | `ansible_host` | хост в группе | Адрес узла | `192.168.15.120`–`192.168.15.125` |
 | `metallb_vip` | `[all:vars]` | VIP MetalLB (обязательное) | `192.168.15.126` |
+| `node_cidr` | `[all:vars]` | Подсеть узлов (обязательное) | `192.168.15.0/24` |
 | `ui_host` | `[all:vars]` | Имя UI | `testy.local` |
 | `api_host` | `[all:vars]` | Имя API | `api.testy.local` |
 | `ansible_python_interpreter` | `[all:vars]` | Интерпретатор на узле | `/usr/bin/python3` |
 
-`ansible_ssh_private_key_file` не задан. OpenSSH сам берёт ключ по умолчанию: агент, затем `~/.ssh/id_ed25519` или `~/.ssh/id_rsa`. Путь к приватному ключу в git не записывают. Имя узла kubeadm — это имя в инвентаре (`k8s-testy-cp` и остальные).
+`ansible_ssh_private_key_file` не задан. OpenSSH сам берёт ключ по умолчанию: агент, затем `~/.ssh/id_ed25519` или `~/.ssh/id_rsa`. Путь к приватному ключу в git не записывают. Имя узла kubeadm — это имя в инвентаре (`k8s-testy-cp` и остальные). Рендер подставляет инвентарь в Gateway, ConfigMap, probes и NetworkPolicy. Файл `k8s/network/policies.yaml` в git хранит адреса этой лаборатории; `make deploy` применяет уже подставленную копию.
 
 | Имя в инвентаре | Группа | `ansible_host` |
 | --- | --- | --- |
@@ -130,7 +131,7 @@ ansible-playbook -i ansible/inventory/hosts.ini ansible/deploy.yml
 | `k8s-testy-gw1` | `gateways` | `192.168.15.124` |
 | `k8s-testy-gw2` | `gateways` | `192.168.15.125` |
 
-Команду `make deploy` запускают с отдельной машины Debian 12, Ubuntu 24.04 или macOS, с которой есть SSH на все шесть. Это не седьмой узел. На Debian и Ubuntu плейбук ставит пакеты через apt, в том числе Docker, и скачивает Helm и kubectl. На macOS apt-get не вызывается: `docker`, `helm` и `kubectl` уже должны быть в PATH, иначе плейбук останавливается и называет недостающую программу. С машины оператора нужен исходящий HTTPS к GitLab YADRO, Docker Hub, Quay, GitHub, `pkgs.k8s.io` и репозиториям Helm.
+Команду `make deploy` запускают с отдельной машины Debian 12, Ubuntu 24.04 или macOS, с которой есть SSH на все шесть. Это не седьмой узел. На Debian и Ubuntu у оператора нужен sudo без пароля: плейбук ставит пакеты через apt, в том числе Docker, и скачивает Helm и kubectl. На macOS apt-get не вызывается: `docker`, `helm` и `kubectl` уже должны быть в PATH, иначе плейбук останавливается и называет недостающую программу. С машины оператора нужен исходящий HTTPS к GitLab YADRO, Docker Hub, Quay, GitHub, `pkgs.k8s.io` и репозиториям Helm. Те же направления нужны и с шести узлов: kubeadm тянет образы с `registry.k8s.io`, узлы ставят пакеты из Debian или Ubuntu и из `pkgs.k8s.io`, containerd и runc качаются с GitHub, а PostgreSQL, Redis, Envoy, Calico, MetalLB, Prometheus, Loki и Grafana приходят со своих реестров. Через `ctr import` на узлы попадают только три собранных образа: `testy-backend`, `testy-frontend` и `testy-fluentd`.
 
 В `/etc/hosts` машины, с которой открывают UI:
 
@@ -168,7 +169,7 @@ cat .secrets/lab-credentials.env
 make verify
 ```
 
-`scripts/verify-cluster.sh` ходит на VIP Gateway по TLS, порт 443. Проверки по порядку: HTML UI с `TestY TMS`, тело API `{"status": "ok"}`, редирект HTTP 301, один target Prometheus запросом `up{job="kubelet"}` со значением не меньше 1, строка access-лога в Loki после curl. Kubeconfig тот же `.kube/lab.config`.
+`scripts/verify-cluster.sh` ходит на VIP Gateway по TLS, порт 443. Проверки по порядку: HTML UI с `TestY TMS`, тело API `{"status": "ok"}`, редирект HTTP 301, запрос Prometheus `up{job="kubelet"}` с числом рядов не меньше числа узлов и значением не меньше 1 у каждого такого ряда, строка access-лога в Loki после curl. Kubeconfig тот же `.kube/lab.config`.
 
 <details><summary>Проверка вручную</summary>
 
@@ -201,7 +202,7 @@ curl --fail --cacert .secrets/tls/ca.crt \
 | k8s-testy-gw2 | gateway | 2 | 4 ГиБ | 40 ГиБ | 192.168.15.125 |
 | VIP MetalLB | не интерфейс ВМ |  |  |  | 192.168.15.126 |
 
-Образ — Debian 12. Пользователь — `m.temerov`. Имена и адреса — `k8s-testy-cp` … `k8s-testy-gw2` и VIP `192.168.15.120`–`192.168.15.126` из таблицы. У каждой ВМ свой статический IPv4 на `vmbr0`, диск virtio, включённый в параметрах ВМ QEMU Guest Agent. Имя ВМ и hostname гостя совпадают с именем в инвентаре: kubeadm называет узел этим именем.
+Образ — Debian 12. Пользователь — `m.temerov`. Имена и адреса узлов — `k8s-testy-cp` … `k8s-testy-gw2`, адреса `192.168.15.120`–`192.168.15.125`. VIP MetalLB один: `192.168.15.126`. У каждой ВМ свой статический IPv4 на `vmbr0`, диск virtio, включённый в параметрах ВМ QEMU Guest Agent. Имя ВМ и hostname гостя совпадают с именем в инвентаре: kubeadm называет узел этим именем. На `/` после установки ОС должно остаться не меньше 15 ГиБ: плейбук проверяет это и останавливается, если места меньше.
 
 Cloud-init в интерфейсе Proxmox: пользователь `m.temerov`, публичный SSH-ключ, DNS, адрес и шлюз из таблицы. Дополнительный сниппет, без токена API:
 
@@ -237,9 +238,9 @@ runcmd:
 
 ## Без Proxmox
 
-Достаточно любых шести машин Debian 12 в одной L2-сети: статические адреса, общий SSH-ключ, sudo без пароля, swap выключен. Те же шаги подходят для Ubuntu 24.04. Имена и адреса записывают в инвентарь. Мост, cloud-init и гостевой агент нужны только если машины живут в Proxmox.
+Достаточно любых шести машин Debian 12 в одной L2-сети: статические адреса, общий SSH-ключ, sudo без пароля, swap выключен. Те же шаги подходят для Ubuntu 24.04. Имена, адреса и `node_cidr` этой подсети записывают в инвентарь. Все шесть `ansible_host` и `metallb_vip` должны лежать внутри `node_cidr`, а сам `node_cidr` не должен пересекаться с pod CIDR `10.244.0.0/16` и service CIDR `10.96.0.0/12`. Мост, cloud-init и гостевой агент нужны только если машины живут в Proxmox. Python 3 на узлах может отсутствовать: плейбук ставит его через `apt` до остальных задач.
 
-`make smoke` не является путём стенда. Это один узел minikube на той же машине, где мало памяти, профиль `testy-smoke`, kubeconfig `.kube/smoke.config`. Шесть узлов он не создаёт и kubeconfig экспертного стенда не перезаписывает. В нём нет Celery, notification worker, PgBouncer, Grafana и kube-prometheus-stack. Экспертам он не нужен.
+`make smoke` не является путём стенда. Это один узел minikube на Linux-машине оператора, профиль `testy-smoke`, kubeconfig `.kube/smoke.config`. На macOS эта цель сразу останавливается. Шесть узлов он не создаёт и kubeconfig экспертного стенда не перезаписывает. В нём нет Celery, notification worker, PgBouncer, Grafana и kube-prometheus-stack. Экспертам он не нужен.
 
 ```bash
 make smoke
@@ -256,7 +257,8 @@ make smoke
 | kubeadm, kubelet, kubectl | пакет `1.37.0-1.1` из `pkgs.k8s.io`, канал `v1.37` |
 | cri-tools | `1.37.0-1.1` |
 | kubernetes-cni | `1.9.1-1.1` |
-| containerd | Debian 12: `1.6.20~ds1-1+deb12u3` (bookworm). Ubuntu 24.04: `2.2.1-0ubuntu1~24.04.3` (noble-updates) |
+| containerd | 2.4.1, официальный tarball `linux-amd64`, один и тот же на Debian 12 и Ubuntu 24.04 |
+| runc | 1.5.1, официальный бинарник под containerd 2.4.1 |
 | Calico | v3.32.2 |
 | MetalLB | chart и приложение 0.16.1, режим L2 |
 | local-path-provisioner | v0.0.37 |
@@ -276,7 +278,7 @@ make smoke
 | nginx UI и sidecar | `nginxinc/nginx-unprivileged:1.27.5-alpine` |
 | kubeconform | v0.8.0 |
 
-Пакеты Kubernetes сверены с индексом `https://pkgs.k8s.io/core:/stable:/v1.37/deb/Packages`. Это общий deb-репозиторий, не набор Ubuntu noble: одна строка `deb https://pkgs.k8s.io/core:/stable:/v1.37/deb/ /` ставится и на Debian 12, и на Ubuntu 24.04. В индексе есть `1.37.0-1.1` и `1.37.1-1.1`; пин остаётся `1.37.0-1.1`. Зависимости kubelet `1.37.0-1.1` — `iptables`, `kubernetes-cni`, `mount`, `util-linux`, `libc6`. containerd Debian сверен с `bookworm/main/binary-amd64`: `1.6.20~ds1-1+deb12u3`. В `bookworm-security` лежит более старый `1.6.20~ds1-1+deb12u2`, в `bookworm-updates` и `bookworm-backports` пакета containerd нет. Пин Ubuntu сверен с `noble-updates`: `2.2.1-0ubuntu1~24.04.3`.
+Пакеты Kubernetes сверены с индексом `https://pkgs.k8s.io/core:/stable:/v1.37/deb/Packages`. Это общий deb-репозиторий, не набор Ubuntu noble: одна строка `deb https://pkgs.k8s.io/core:/stable:/v1.37/deb/ /` ставится и на Debian 12, и на Ubuntu 24.04. В индексе есть `1.37.0-1.1` и `1.37.1-1.1`; пин остаётся `1.37.0-1.1`. Зависимости kubelet `1.37.0-1.1` — `iptables`, `kubernetes-cni`, `mount`, `util-linux`, `libc6`. containerd из этого индекса не ставится: пакет bookworm 1.6 не входит в матрицу Kubernetes 1.37. Плейбук ставит containerd 2.4.1 и runc 1.5.1 с GitHub и включает `SystemdCgroup` в конфиге, который печатает сам `containerd config default`. Динамическая сборка containerd требует glibc 2.35 или новее; у Debian 12 и Ubuntu 24.04 он есть.
 
 Стек TestY совпадает с `docker-compose.yml` релиза: backend (gunicorn + uvicorn), frontend, PostgreSQL, PgBouncer, Redis, Celery (`worker -B`) и `runworker notifications`.
 
@@ -302,7 +304,7 @@ TLS терминируется на Gateway. CA и сертификат с SAN �
 up{job="kubelet"}
 ```
 
-Успех: статус `success` и хотя бы один ряд со значением 1. Сводка по всем целям, её же показывает дашборд `TestY lab metrics`:
+Успех: статус `success` и не меньше одного ряда со значением 1 на каждый узел кластера. Сводка по всем целям, её же показывает дашборд `TestY lab metrics`:
 
 ```promql
 sum by (job) (up)
@@ -331,7 +333,7 @@ curl -fsS -G 'http://127.0.0.1:13100/loki/api/v1/query_range' \
   --data-urlencode "end=${end}"
 ```
 
-Fluentd работает не от root: uid `999` и gid `999` из образа, дополнительная группа `0` нужна, чтобы читать журналы kubelet `root:root` с правами `0640`. Корень файловой системы только для чтения, позиция tail лежит в emptyDir. Init-контейнер от root ставит sticky-бит на `/tmp` (`1777`): Ruby 3.4 не берёт world-writable каталог без него.
+Fluentd работает не от root: uid `999` и gid `999` из образа, дополнительная группа `0` нужна, чтобы читать журналы kubelet `root:root` с правами `0640`. Корень файловой системы только для чтения. Позиция tail и файловый буфер лежат на хосте в `/var/lib/testy-fluentd`, поэтому рестарт пода не перечитывает журналы с начала: `read_from_head` срабатывает только пока pos-файла ещё нет. Init-контейнер от root готовит этот каталог и ставит sticky-бит на `/tmp` (`1777`): Ruby 3.4 не берёт world-writable каталог без него. Access-лог Envoy ищется в namespace `envoy-gateway-system`, куда Envoy Gateway 1.9 ставит data plane по умолчанию.
 
 ## Безопасность
 
@@ -339,7 +341,7 @@ Fluentd работает не от root: uid `999` и gid `999` из образ�
 
 `testy` — Pod Security `restricted`: процессы уже non-root, probes и entrypoint этого не ломают. `envoy-gateway-system` — `baseline`: chart сам запускает контроллер non-root с read-only корнем, а listener 80/443 внутри контейнера сдвинут на 10080/10443. `logging` — `privileged`: Fluentd монтирует hostPath `/var/log`, а `baseline` такой том запрещает. `monitoring` и `metallb-system` остаются `privileged`, потому что node-exporter использует hostNetwork, hostPID и hostPort 9100, а speaker MetalLB — hostNetwork. Init-контейнер Grafana от root выключен: том данных получает fsGroup 472.
 
-В `testy`, `monitoring`, `logging` и `envoy-gateway-system` NetworkPolicy сначала запрещает весь вход и выход. Дальше явно разрешены DNS, Gateway к портам 8080 приложения, скрейп Prometheus (kubelet 10250, node-exporter 9100, kube-system и Loki 3100), Fluentd к API и к Loki, PgBouncer к PostgreSQL, приложение к PgBouncer и Redis. Клиенты снаружи попадают только на порты data plane 10080, 10443, 80 и 443. Отдельное правило пускает вход из подсети узлов `192.168.15.0/24`: Calico применяет политику и к probes kubelet, и к `kubectl port-forward`, без этого `make verify` не дойдёт до Prometheus и Loki.
+В `testy`, `monitoring`, `logging` и `envoy-gateway-system` NetworkPolicy сначала запрещает весь вход и выход. Дальше явно разрешены DNS, Gateway к портам 8080 приложения, скрейп Prometheus (kubelet 10250, node-exporter 9100, kube-system и Loki 3100), Fluentd к API и к Loki, PgBouncer к PostgreSQL, приложение к PgBouncer и Redis. Клиенты снаружи попадают только на порты data plane 10080, 10443, 80 и 443. Probes kubelet и `kubectl port-forward` приходят с IP узлов, поэтому для них открыты только адреса из инвентаря и только порты проб и port-forward. PostgreSQL и Redis с этих адресов не открыты. Подсеть `node_cidr` остаётся в правиле выхода Prometheus к kubelet и node-exporter: туда ходят по IP узла, а не по IP пода.
 
 ## Дополнительно
 
@@ -351,19 +353,19 @@ Fluentd работает не от root: uid `999` и gid `999` из образ�
 ## Ограничения
 
 - `make deploy` ставит кластер на шесть уже существующих ВМ Debian 12. Ubuntu 24.04 проходит по той же ветке `ansible_distribution`.
-- containerd на Debian 12 — пакет bookworm `1.6.20~ds1-1+deb12u3`, не сборка Ubuntu `2.2.1`. Пакет kubelet от версии containerd не зависит.
+- containerd 2.4.1 и runc 1.5.1 ставятся с GitHub на Debian 12 и Ubuntu 24.04 одинаково. Нужен glibc 2.35 или новее. kubelet по-прежнему из `pkgs.k8s.io` и от пакета containerd дистрибутива не зависит.
 - Один control-plane. Отказ `k8s-testy-cp` останавливает API.
 - MetalLB только L2 и только один VIP в той же подсети, что и узлы. Облачного балансировщика нет. Адрес VIP должен быть свободен.
 - Calico v3.32.2 — последний релиз на момент фиксации. Проект Calico проверял эту ветку на Kubernetes 1.34–1.36. Отдельной версии под 1.37 не было, на стенде стоит v3.32.2.
 - kube-proxy зафиксирован в режиме iptables.
 - local-path не реплицирует диск: PVC остаётся на том worker, где впервые сел под.
-- Backend в одной реплике: миграции выполняются в его entrypoint.
+- Backend в одной реплике: миграции выполняются в его entrypoint. Redis тоже в одной реплике и с `strategy: Recreate`, иначе новый под не получает диск `ReadWriteOnce`, пока жив старый.
 - PVC медиа один на backend, Celery и notifications.
 - Сертификат самоподписанный. Для curl нужен `--cacert .secrets/tls/ca.crt`.
 - SMTP не настроен.
 - Плейбук выключает ufw, если он установлен, иначе режутся API и ARP MetalLB.
 - `host_key_checking` в `ansible.cfg` выключен: это лабораторный допуск, не образец для боевой сети.
-- Prometheus, Loki и PostgreSQL могут сесть на один worker. Если под Pending, этому worker нужно больше 8 ГиБ.
+- Prometheus, Loki и PostgreSQL обязаны сесть на три разных worker. Если один worker недоступен, один из этих подов останется Pending. На том же worker всё ещё могут оказаться backend и Celery, и 8 ГиБ им может не хватить по лимитам.
 - Первый деплой долгий: клон TestY, сборка образов и их импорт в containerd.
 - Пароли годятся только для этого стенда. Удаление PVC без удаления `.secrets/lab-credentials.env` разъедет пароль и данные PostgreSQL.
-- `make smoke` — отдельный одноузловой minikube и не замена `make deploy`.
+- `make smoke` — отдельный одноузловой minikube на Linux и не замена `make deploy`.

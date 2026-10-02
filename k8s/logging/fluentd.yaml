@@ -42,8 +42,20 @@ data:
     <source>
       @type tail
       @id tail_testy_access
-      path /var/log/containers/*_testy_accesslog-*.log,/var/log/containers/*_testy_backend-*.log,/var/log/containers/*_testy_envoy-*.log
+      path /var/log/containers/*_testy_accesslog-*.log,/var/log/containers/*_testy_backend-*.log
       pos_file /fluentd/pos/testy.pos
+      tag kube.*
+      read_from_head true
+      refresh_interval 5
+      <parse>
+        @type none
+      </parse>
+    </source>
+    <source>
+      @type tail
+      @id tail_envoy_access
+      path /var/log/containers/*_envoy-gateway-system_envoy-*.log,/var/log/containers/*_testy_envoy-*.log
+      pos_file /fluentd/pos/envoy.pos
       tag kube.*
       read_from_head true
       refresh_interval 5
@@ -62,11 +74,14 @@ data:
       line_format json
       remove_keys kubernetes
       <buffer>
-        @type memory
+        @type file
+        path /fluentd/pos/buffer
         flush_mode interval
         flush_interval 2s
         retry_forever true
-        overflow_action block
+        total_limit_size 256MB
+        chunk_limit_size 8MB
+        overflow_action drop_oldest_chunk
       </buffer>
     </match>
 ---
@@ -108,10 +123,15 @@ spec:
         - name: tmp-perms
           image: testy-fluentd:1.19.3
           imagePullPolicy: IfNotPresent
-          command: ["/bin/chmod", "1777", "/tmp"]
+          command:
+            - /bin/sh
+            - -c
+            - chmod 1777 /tmp && mkdir -p /fluentd/pos && chown 999:999 /fluentd/pos && chmod 0750 /fluentd/pos
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: state
+              mountPath: /fluentd/pos
           securityContext:
             runAsUser: 0
             runAsNonRoot: false
@@ -170,7 +190,9 @@ spec:
           hostPath:
             path: /var/log
         - name: state
-          emptyDir: {}
+          hostPath:
+            path: /var/lib/testy-fluentd
+            type: DirectoryOrCreate
         - name: log
           emptyDir: {}
         - name: tmp

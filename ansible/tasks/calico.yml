@@ -1,9 +1,19 @@
 ---
+- name: Download the Calico manifest
+  ansible.builtin.get_url:
+    url: https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml
+    dest: "{{ lab_cache }}/calico.yaml"
+    mode: "0644"
+
+- name: Pin the Calico IPv4 pool to the cluster pod CIDR
+  ansible.builtin.command: python3 {{ repo_root }}/scripts/pin-calico-cidr.py {{ lab_cache }}/calico.yaml {{ pod_cidr }}
+  changed_when: true
+
 - name: Install Calico
   ansible.builtin.command: >-
     {{ repo_root }}/scripts/with-lab-kubeconfig.sh
     kubectl apply --server-side --force-conflicts
-    -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml
+    -f {{ lab_cache }}/calico.yaml
   changed_when: true
 
 - name: Wait until the control plane is Ready

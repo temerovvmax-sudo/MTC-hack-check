@@ -23,7 +23,7 @@
 - name: Prepare the Debian 12 or Ubuntu 24.04 nodes
   hosts: k8s_nodes
   become: true
-  gather_facts: true
+  gather_facts: false
   environment:
     DEBIAN_FRONTEND: noninteractive
   tasks:

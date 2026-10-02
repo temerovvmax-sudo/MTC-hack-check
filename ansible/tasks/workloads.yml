@@ -1,4 +1,12 @@
 ---
+- name: Render Gateway, TestY and network policy for this inventory
+  ansible.builtin.command: >-
+    python3 {{ repo_root }}/scripts/render-lab-manifests.py render
+    {{ repo_root }} {{ ui_host }} {{ api_host }} {{ metallb_vip }}
+    {{ node_cidr }} {{ control_plane_ip }} {{ pod_cidr }} {{ service_cidr }}
+    {{ node_ips }} {{ lab_cache }}/rendered-lab
+  changed_when: true
+
 - name: Apply namespaces
   ansible.builtin.command: >-
     {{ repo_root }}/scripts/with-lab-kubeconfig.sh
@@ -8,7 +16,7 @@
 - name: Apply default-deny network policies
   ansible.builtin.command: >-
     {{ repo_root }}/scripts/with-lab-kubeconfig.sh
-    kubectl apply -f {{ repo_root }}/k8s/network/policies.yaml
+    kubectl apply -f {{ lab_cache }}/rendered-lab/policies.yaml
   changed_when: true
 
 - name: Load credentials
@@ -78,13 +86,6 @@
     --wait --timeout 10m
   changed_when: true
 
-- name: Render Gateway and TestY config for this inventory
-  ansible.builtin.command: >-
-    python3 {{ repo_root }}/scripts/render-lab-manifests.py
-    {{ repo_root }} {{ ui_host }} {{ api_host }} {{ metallb_vip }}
-    {{ lab_cache }}/rendered-lab
-  changed_when: true
-
 - name: Apply TestY data, the application and the Gateway
   ansible.builtin.command: >-
     {{ repo_root }}/scripts/with-lab-kubeconfig.sh
@@ -92,7 +93,7 @@
   loop:
     - "{{ repo_root }}/k8s/testy/rbac.yaml"
     - "{{ lab_cache }}/rendered-lab/data.yaml"
-    - "{{ repo_root }}/k8s/testy/app.yaml"
+    - "{{ lab_cache }}/rendered-lab/app.yaml"
     - "{{ lab_cache }}/rendered-lab/gateway.yaml"
   changed_when: true
 
@@ -126,16 +127,6 @@
     --wait --timeout 40m
   changed_when: true
 
-- name: Keep logging at baseline for the Fluentd hostPath
-  ansible.builtin.command: >-
-    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
-    kubectl label namespace logging
-    pod-security.kubernetes.io/enforce=baseline
-    pod-security.kubernetes.io/audit=baseline
-    pod-security.kubernetes.io/warn=baseline
-    --overwrite
-  changed_when: true
-
 - name: Apply Fluentd and the Grafana dashboards
   ansible.builtin.command: >-
     {{ repo_root }}/scripts/with-lab-kubeconfig.sh
@@ -164,6 +155,12 @@
     - testy-frontend
   changed_when: false
 
+- name: Wait for Fluentd
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    kubectl -n logging rollout status daemonset/fluentd --timeout=300s
+  changed_when: false
+
 - name: Wait for the Envoy data plane
   ansible.builtin.command: >-
     {{ repo_root }}/scripts/with-lab-kubeconfig.sh
@@ -184,37 +181,26 @@
   delay: 5
   until: gateway_vip.rc == 0
 
-- name: Record pinned versions
-  ansible.builtin.copy:
-    dest: "{{ lab_secrets_dir }}/installed-versions.txt"
-    mode: "0644"
-    content: |
-      testy={{ testy_version }} commit={{ testy_git_commit }}
-      kubernetes={{ kubernetes_version }}
-      kubeadm={{ kubernetes_apt_version }}
-      kubelet={{ kubernetes_apt_version }}
-      kubectl={{ kubernetes_apt_version }}
-      containerd_debian={{ containerd_apt_version_debian }}
-      containerd_ubuntu={{ containerd_apt_version_ubuntu }}
-      containerd={{ hostvars[groups['control_plane'][0]].containerd_apt_version | default(containerd_apt_version_debian) }}
-      calico={{ calico_version }}
-      metallb={{ metallb_version }} chart={{ metallb_chart_version }}
-      local_path={{ local_path_version }}
-      pod_cidr={{ pod_cidr }}
-      metallb_vip={{ metallb_vip }}
-      ui_host={{ ui_host }}
-      api_host={{ api_host }}
-      envoy_gateway_chart={{ envoy_gateway_chart_version }}
-      kube_prometheus_stack={{ kube_prometheus_stack_version }}
-      prometheus={{ prometheus_version }}
-      prometheus_operator={{ prometheus_operator_version }}
-      alertmanager={{ alertmanager_version }}
-      grafana={{ grafana_version }}
-      loki_chart={{ loki_chart_version }}
-      loki={{ loki_version }}
-      fluentd={{ fluentd_version }}
-      fluent_plugin_grafana_loki={{ fluent_plugin_loki_version }}
-      postgres={{ postgres_image }}
-      redis={{ redis_image }}
-      pgbouncer={{ pgbouncer_image }}
-      nginx={{ nginx_image }}
+- name: Record versions observed in the cluster
+  ansible.builtin.command: >-
+    {{ repo_root }}/scripts/with-lab-kubeconfig.sh
+    python3 {{ repo_root }}/scripts/record-cluster-versions.py
+    {{ lab_secrets_dir }}/installed-versions.txt
+  environment:
+    CONTAINERD_VERSION: "{{ containerd_version }}"
+    RUNC_VERSION: "{{ runc_version }}"
+    POD_CIDR: "{{ pod_cidr }}"
+    SERVICE_CIDR: "{{ service_cidr }}"
+    NODE_CIDR: "{{ node_cidr }}"
+    METALLB_VIP: "{{ metallb_vip }}"
+    UI_HOST: "{{ ui_host }}"
+    API_HOST: "{{ api_host }}"
+    KUBE_PROMETHEUS_STACK_VERSION: "{{ kube_prometheus_stack_version }}"
+    PROMETHEUS_OPERATOR_VERSION: "{{ prometheus_operator_version }}"
+    ALERTMANAGER_VERSION: "{{ alertmanager_version }}"
+    PROMETHEUS_VERSION: "{{ prometheus_version }}"
+    GRAFANA_VERSION: "{{ grafana_version }}"
+    LOKI_VERSION: "{{ loki_version }}"
+    LOKI_CHART_VERSION: "{{ loki_chart_version }}"
+    ENVOY_GATEWAY_CHART_VERSION: "{{ envoy_gateway_chart_version }}"
+  changed_when: true

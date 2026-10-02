@@ -12,6 +12,11 @@
       Найдено {{ ansible_distribution }} {{ ansible_distribution_version }}
       ({{ ansible_os_family }}).
 
+- name: Require passwordless sudo on Debian and Ubuntu
+  when: ansible_os_family == "Debian"
+  ansible.builtin.command: sudo -n true
+  changed_when: false
+
 - name: Install packages used to build and publish the lab
   when: ansible_os_family == "Debian"
   become: true

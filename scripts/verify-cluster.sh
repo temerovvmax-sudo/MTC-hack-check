@@ -155,7 +155,7 @@ def port_forward(namespace, service, local_port, remote_port):
         ["kubectl", "port-forward", "-n", namespace, service, f"{local_port}:{remote_port}"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
-    time.sleep(2)
+    time.sleep(5)
     if proc.poll() is not None:
         print(proc.stdout.read() if proc.stdout else "port-forward failed", file=sys.stderr)
         raise SystemExit(1)
@@ -172,12 +172,16 @@ finally:
 payload = json.loads(query.stdout)
 results = payload.get("data", {}).get("result", [])
 up = [item for item in results if float(item["value"][1]) >= 1]
-if payload.get("status") != "success" or not up:
+expected = len(nodes["items"])
+if payload.get("status") != "success" or len(up) < expected:
     print(query.stdout)
-    print('Prometheus query up{job="kubelet"} returned no up target', file=sys.stderr)
+    print(
+        f'Prometheus query up{{job="kubelet"}} has {len(up)} up target(s), expected {expected}',
+        file=sys.stderr,
+    )
     raise SystemExit(1)
 sample = up[0].get("metric", {}).get("instance", "kubelet")
-print(f'Prometheus up{{job="kubelet"}} has {len(up)} target(s); one is {sample}')
+print(f'Prometheus up{{job="kubelet"}} has {len(up)} up target(s); one is {sample}')
 
 logql = '{job="testy-access"} |= "testy-access" |= "' + probe + '"'
 found = False

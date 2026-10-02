@@ -3,6 +3,10 @@ crds:
   enabled: true
 alertmanager:
   alertmanagerSpec:
+    image:
+      registry: quay.io
+      repository: prometheus/alertmanager
+      tag: v0.34.1
     nodeSelector:
       testy.yadro.dev/pool: app
     resources:
@@ -57,6 +61,25 @@ prometheus:
     retentionSize: 4GB
     nodeSelector:
       testy.yadro.dev/pool: app
+    podMetadata:
+      labels:
+        testy.yadro.dev/workload: prometheus
+    podAntiAffinity: ""
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                testy.yadro.dev/workload: postgres
+            namespaces:
+              - testy
+            topologyKey: kubernetes.io/hostname
+          - labelSelector:
+              matchLabels:
+                testy.yadro.dev/workload: loki
+            namespaces:
+              - logging
+            topologyKey: kubernetes.io/hostname
     resources:
       requests:
         cpu: 100m
@@ -95,6 +118,15 @@ prometheus-node-exporter:
       cpu: 100m
       memory: 64Mi
 prometheusOperator:
+  image:
+    registry: quay.io
+    repository: prometheus-operator/prometheus-operator
+    tag: v0.94.1
+  prometheusConfigReloader:
+    image:
+      registry: quay.io
+      repository: prometheus-operator/prometheus-config-reloader
+      tag: v0.94.1
   nodeSelector:
     testy.yadro.dev/pool: app
   resources:

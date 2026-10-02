@@ -1,4 +1,17 @@
 ---
+- name: Install Python 3 before Ansible modules run
+  ansible.builtin.raw: |
+    set -eu
+    if ! command -v python3 >/dev/null 2>&1; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y python3 ca-certificates
+    fi
+  changed_when: false
+
+- name: Gather facts after Python is present
+  ansible.builtin.setup:
+
 - name: Require Debian 12 or Ubuntu 24.04
   ansible.builtin.assert:
     that:
@@ -9,10 +22,6 @@
       Узел {{ inventory_hostname }} должен быть Debian 12 (bookworm) или Ubuntu 24.04 (noble).
       Найдено {{ ansible_distribution }} {{ ansible_distribution_version }}
       ({{ ansible_distribution_release }}).
-
-- name: Pin containerd for this distribution
-  ansible.builtin.set_fact:
-    containerd_apt_version: "{{ containerd_apt_version_debian if ansible_distribution == 'Debian' else containerd_apt_version_ubuntu }}"
 
 - name: Install base packages
   ansible.builtin.apt:
@@ -132,10 +141,9 @@
     content: |
       deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_minor }}/deb/ /
 
-- name: Install pinned containerd, kubeadm, kubelet and kubectl
+- name: Install pinned cri-tools, kubeadm, kubelet and kubectl
   ansible.builtin.apt:
     name:
-      - "containerd={{ containerd_apt_version }}"
       - "cri-tools={{ cri_tools_apt_version }}"
       - "kubernetes-cni={{ kubernetes_cni_apt_version }}"
       - "kubelet={{ kubernetes_apt_version }}"
@@ -144,48 +152,25 @@
     state: present
     update_cache: true
     allow_downgrade: true
+    install_recommends: false
 
-- name: Hold the pinned runtime and Kubernetes packages
+- name: Hold the pinned Kubernetes packages
   ansible.builtin.dpkg_selections:
     name: "{{ item }}"
     selection: hold
   loop:
-    - containerd
     - cri-tools
     - kubernetes-cni
     - kubelet
     - kubeadm
     - kubectl
 
-- name: Check whether containerd already uses the systemd cgroup driver
-  ansible.builtin.command: grep -q 'SystemdCgroup = true' /etc/containerd/config.toml
-  register: containerd_cgroup
-  changed_when: false
-  failed_when: false
-
-- name: Write a containerd config with SystemdCgroup
-  when: containerd_cgroup.rc != 0
-  ansible.builtin.shell:
-    cmd: |
-      set -euo pipefail
-      mkdir -p /etc/containerd
-      containerd config default | sed 's/SystemdCgroup = false/SystemdCgroup = true/' > /etc/containerd/config.toml
-    executable: /bin/bash
-  register: containerd_config
-
-- name: Restart containerd after a config change
-  ansible.builtin.systemd:
-    name: containerd
-    state: restarted
-    enabled: true
-    daemon_reload: true
-  when: containerd_config is changed
-
-- name: Ensure containerd is running
-  ansible.builtin.systemd:
-    name: containerd
-    state: started
-    enabled: true
+- name: Install containerd and runc from the upstream release
+  ansible.builtin.command: "{{ repo_root }}/scripts/install-containerd.sh"
+  environment:
+    CONTAINERD_VERSION: "{{ containerd_version }}"
+    RUNC_VERSION: "{{ runc_version }}"
+  changed_when: true
 
 - name: Enable kubelet
   ansible.builtin.systemd:

@@ -4,13 +4,20 @@
     path: /etc/kubernetes/kubelet.conf
   register: kubelet_conf
 
-- name: Create a join command on the control plane
+- name: Create a join command when a node is not in the cluster yet
   ansible.builtin.command: kubeadm token create --print-join-command
   delegate_to: "{{ groups['control_plane'][0] }}"
   become: true
   run_once: true
   changed_when: false
   register: join_cmd
+  when: >-
+    (groups['workers'] + groups['gateways'])
+    | map('extract', hostvars, 'kubelet_conf')
+    | selectattr('stat.exists')
+    | list
+    | length
+    != (groups['workers'] + groups['gateways']) | length
 
 - name: Join the cluster
   ansible.builtin.command: >-

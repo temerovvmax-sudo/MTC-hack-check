@@ -13,6 +13,14 @@
   tasks:
     - ansible.builtin.import_tasks: tasks/guard.yml
 
+    - name: Require Linux for the one-node smoke profile
+      ansible.builtin.assert:
+        that:
+          - ansible_system == "Linux"
+        fail_msg: >-
+          make smoke запускается на Linux. На macOS используйте make deploy
+          для шести узлов. Найдено {{ ansible_system }}.
+
     - name: Read available memory
       ansible.builtin.command: awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo
       register: mem_available
